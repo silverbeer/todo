@@ -20,21 +20,23 @@ from .connection import DatabaseConnection
 T = TypeVar("T")
 
 
-def _row_to_dict(result: Any) -> dict[str, Any]:
+def _row_to_dict(result: Any, cursor: Any = None) -> dict[str, Any]:
     """Convert DuckDB result row to dictionary.
 
     Args:
         result: DuckDB result row.
+        cursor: DuckDB cursor with description.
 
     Returns:
         Dictionary representation of the row.
     """
     if not result:
         return {}
-    column_names = (
-        [col[0] for col in result.description] if hasattr(result, "description") else []
-    )
-    return dict(zip(column_names, result))
+    if cursor and hasattr(cursor, "description"):
+        column_names = [col[0] for col in cursor.description]
+        return dict(zip(column_names, result))
+    # Fallback for when no cursor is provided - return empty dict
+    return {}
 
 
 class BaseRepository[T](ABC):
@@ -64,12 +66,13 @@ class BaseRepository[T](ABC):
             Record if found, None otherwise.
         """
         conn = self.db.connect()
-        result = conn.execute(
+        cursor = conn.execute(
             f"SELECT * FROM {self.table_name} WHERE id = ?", [record_id]
-        ).fetchone()
+        )
+        result = cursor.fetchone()
 
         if result:
-            return self._row_to_model(_row_to_dict(result))
+            return self._row_to_model(_row_to_dict(result, cursor))
         return None
 
     def delete(self, record_id: int) -> bool:
@@ -82,10 +85,17 @@ class BaseRepository[T](ABC):
             True if deleted, False if not found.
         """
         conn = self.db.connect()
-        result = conn.execute(
-            f"DELETE FROM {self.table_name} WHERE id = ?", [record_id]
-        )
-        return result.rowcount > 0
+
+        # First check if record exists
+        exists = self.get_by_id(record_id) is not None
+        if not exists:
+            return False
+
+        # Now delete it
+        conn.execute(f"DELETE FROM {self.table_name} WHERE id = ?", [record_id])
+
+        # DuckDB should report rowcount, but let's check by trying to retrieve again
+        return self.get_by_id(record_id) is None
 
     @abstractmethod
     def _row_to_model(self, row: dict[str, Any]) -> T:
@@ -117,17 +127,14 @@ class CategoryRepository(BaseRepository[Category]):
             List of all categories.
         """
         conn = self.db.connect()
-        results = conn.execute(
-            f"SELECT * FROM {self.table_name} ORDER BY name"
-        ).fetchall()
+        cursor = conn.execute(f"SELECT * FROM {self.table_name} ORDER BY name")
+        results = cursor.fetchall()
 
         if not results:
             return []
-        column_names = (
-            [col[0] for col in results[0].description]
-            if hasattr(results[0], "description")
-            else []
-        )
+
+        # Get column names from cursor description
+        column_names = [desc[0] for desc in cursor.description]
         return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
     def get_by_name(self, name: str) -> Category | None:
@@ -140,12 +147,11 @@ class CategoryRepository(BaseRepository[Category]):
             Category if found, None otherwise.
         """
         conn = self.db.connect()
-        result = conn.execute(
-            f"SELECT * FROM {self.table_name} WHERE name = ?", [name]
-        ).fetchone()
+        cursor = conn.execute(f"SELECT * FROM {self.table_name} WHERE name = ?", [name])
+        result = cursor.fetchone()
 
         if result:
-            return self._row_to_model(_row_to_dict(result))
+            return self._row_to_model(_row_to_dict(result, cursor))
         return None
 
     def create(self, category: Category) -> Category:
@@ -158,16 +164,17 @@ class CategoryRepository(BaseRepository[Category]):
             Created category with assigned ID.
         """
         conn = self.db.connect()
-        result = conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO categories (name, color, icon, description)
             VALUES (?, ?, ?, ?)
             RETURNING *
         """,
             [category.name, category.color, category.icon, category.description],
-        ).fetchone()
+        )
+        result = cursor.fetchone()
 
-        return self._row_to_model(_row_to_dict(result))
+        return self._row_to_model(_row_to_dict(result, cursor))
 
 
 class TodoRepository(BaseRepository[Todo]):
@@ -209,16 +216,17 @@ class TodoRepository(BaseRepository[Todo]):
         conn = self.db.connect()
 
         todo_uuid = str(uuid4())
-        result = conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO todos (uuid, title, description, final_size, final_priority)
             VALUES (?, ?, ?, 'medium', 'medium')
             RETURNING *
         """,
             [todo_uuid, title, description],
-        ).fetchone()
+        )
+        result = cursor.fetchone()
 
-        return self._row_to_model(_row_to_dict(result))
+        return self._row_to_model(_row_to_dict(result, cursor))
 
     def get_active_todos(self, limit: int | None = None) -> list[Todo]:
         """Get todos that are not completed or archived.
@@ -251,17 +259,15 @@ class TodoRepository(BaseRepository[Todo]):
             query += " LIMIT ?"
             params.append(limit)
 
-        results = conn.execute(query, params).fetchall()
-        return (
-            [
-                self._row_to_model(
-                    dict(zip([col[0] for col in results[0].description], row))
-                )
-                for row in results
-            ]
-            if results
-            else []
-        )
+        cursor = conn.execute(query, params)
+        results = cursor.fetchall()
+
+        if not results:
+            return []
+
+        # Get column names from cursor description
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
     def get_overdue_todos(self) -> list[Todo]:
         """Get todos that are overdue.
@@ -271,24 +277,21 @@ class TodoRepository(BaseRepository[Todo]):
         """
         conn = self.db.connect()
 
-        results = conn.execute("""
+        cursor = conn.execute("""
         SELECT t.*
         FROM todos t
         WHERE t.due_date < CURRENT_DATE
         AND t.status NOT IN ('completed', 'archived')
         ORDER BY t.due_date ASC
-        """).fetchall()
+        """)
+        results = cursor.fetchall()
 
-        return (
-            [
-                self._row_to_model(
-                    dict(zip([col[0] for col in results[0].description], row))
-                )
-                for row in results
-            ]
-            if results
-            else []
-        )
+        if not results:
+            return []
+
+        # Get column names from cursor description
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
     def complete_todo(self, todo_id: int) -> Todo | None:
         """Mark todo as completed and calculate points.
@@ -301,13 +304,10 @@ class TodoRepository(BaseRepository[Todo]):
         """
         conn = self.db.connect()
 
-        # Start transaction
-        conn.begin()
         try:
             # Get current todo
             todo = self.get_by_id(todo_id)
             if not todo or todo.status == TodoStatus.COMPLETED:
-                conn.rollback()
                 return None
 
             # Calculate points
@@ -326,19 +326,20 @@ class TodoRepository(BaseRepository[Todo]):
                     total_points_earned = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-                RETURNING *
             """,
                 [base_points, bonus_points, total_points, todo_id],
-            ).fetchone()
+            )
+
+            if result.rowcount == 0:
+                return None
 
             # Update stats
             self._update_completion_stats(conn, total_points)
 
-            conn.commit()
-            return self._row_to_model(_row_to_dict(result))
+            # Get updated todo
+            return self.get_by_id(todo_id)
 
         except Exception as e:
-            conn.rollback()
             raise e
 
     def get_by_uuid(self, uuid: str) -> Todo | None:
@@ -351,10 +352,11 @@ class TodoRepository(BaseRepository[Todo]):
             Todo if found, None otherwise.
         """
         conn = self.db.connect()
-        result = conn.execute("SELECT * FROM todos WHERE uuid = ?", [uuid]).fetchone()
+        cursor = conn.execute("SELECT * FROM todos WHERE uuid = ?", [uuid])
+        result = cursor.fetchone()
 
         if result:
-            return self._row_to_model(_row_to_dict(result))
+            return self._row_to_model(_row_to_dict(result, cursor))
         return None
 
     def update_todo(self, todo_id: int, updates: dict[str, Any]) -> Todo | None:
@@ -382,7 +384,7 @@ class TodoRepository(BaseRepository[Todo]):
         set_clause = ", ".join(set_clauses)
         values = list(updates.values()) + [todo_id]
 
-        result = conn.execute(
+        cursor = conn.execute(
             f"""
             UPDATE todos
             SET {set_clause}, updated_at = CURRENT_TIMESTAMP
@@ -390,10 +392,11 @@ class TodoRepository(BaseRepository[Todo]):
             RETURNING *
         """,
             values,
-        ).fetchone()
+        )
+        result = cursor.fetchone()
 
         if result:
-            return self._row_to_model(_row_to_dict(result))
+            return self._row_to_model(_row_to_dict(result, cursor))
         return None
 
     def _calculate_base_points(self, size: TaskSize) -> int:
@@ -430,7 +433,7 @@ class TodoRepository(BaseRepository[Todo]):
             DO UPDATE SET
                 tasks_completed = daily_activity.tasks_completed + 1,
                 total_points_earned = daily_activity.total_points_earned + ?,
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = now()
         """,
             [today, points_earned, points_earned],
         )
@@ -442,7 +445,7 @@ class TodoRepository(BaseRepository[Todo]):
             SET total_tasks_completed = total_tasks_completed + 1,
                 total_points = total_points + ?,
                 last_completion_date = ?,
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = now()
         """,
             [points_earned, today],
         )
@@ -465,10 +468,11 @@ class UserStatsRepository(BaseRepository[UserStats]):
             Current user stats or None if not found.
         """
         conn = self.db.connect()
-        result = conn.execute("SELECT * FROM user_stats LIMIT 1").fetchone()
+        cursor = conn.execute("SELECT * FROM user_stats LIMIT 1")
+        result = cursor.fetchone()
 
         if result:
-            return self._row_to_model(_row_to_dict(result))
+            return self._row_to_model(_row_to_dict(result, cursor))
         return None
 
     def update_stats(self, updates: dict[str, Any]) -> UserStats | None:
@@ -490,7 +494,7 @@ class UserStatsRepository(BaseRepository[UserStats]):
         set_clause = ", ".join(set_clauses)
         values = list(updates.values())
 
-        conn.execute(
+        result = conn.execute(
             f"""
             UPDATE user_stats
             SET {set_clause}, updated_at = CURRENT_TIMESTAMP
@@ -498,7 +502,10 @@ class UserStatsRepository(BaseRepository[UserStats]):
             values,
         )
 
-        return self.get_current_stats()
+        # Check if update was successful (at least one row affected)
+        if result.rowcount > 0:
+            return self.get_current_stats()
+        return None
 
 
 class DailyActivityRepository(BaseRepository[DailyActivity]):
@@ -519,12 +526,13 @@ class DailyActivityRepository(BaseRepository[DailyActivity]):
         """
         conn = self.db.connect()
         today = date.today()
-        result = conn.execute(
+        cursor = conn.execute(
             "SELECT * FROM daily_activity WHERE activity_date = ?", [today]
-        ).fetchone()
+        )
+        result = cursor.fetchone()
 
         if result:
-            return self._row_to_model(_row_to_dict(result))
+            return self._row_to_model(_row_to_dict(result, cursor))
         return None
 
     def get_recent_activity(self, days: int = 30) -> list[DailyActivity]:
@@ -537,26 +545,23 @@ class DailyActivityRepository(BaseRepository[DailyActivity]):
             List of recent activity records.
         """
         conn = self.db.connect()
-        results = conn.execute(
+        cursor = conn.execute(
             """
             SELECT *
             FROM daily_activity
-            WHERE activity_date >= CURRENT_DATE - INTERVAL ? DAY
+            WHERE activity_date >= (CURRENT_DATE - ? * INTERVAL '1 DAY')
             ORDER BY activity_date DESC
         """,
             [days],
-        ).fetchall()
-
-        return (
-            [
-                self._row_to_model(
-                    dict(zip([col[0] for col in results[0].description], row))
-                )
-                for row in results
-            ]
-            if results
-            else []
         )
+        results = cursor.fetchall()
+
+        if not results:
+            return []
+
+        # Get column names from cursor description
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
 
 class AchievementRepository(BaseRepository[Achievement]):
@@ -576,20 +581,17 @@ class AchievementRepository(BaseRepository[Achievement]):
             List of all achievements.
         """
         conn = self.db.connect()
-        results = conn.execute(
+        cursor = conn.execute(
             "SELECT * FROM achievements ORDER BY requirement_value, name"
-        ).fetchall()
-
-        return (
-            [
-                self._row_to_model(
-                    dict(zip([col[0] for col in results[0].description], row))
-                )
-                for row in results
-            ]
-            if results
-            else []
         )
+        results = cursor.fetchall()
+
+        if not results:
+            return []
+
+        # Get column names from cursor description
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
     def get_unlocked_achievements(self) -> list[Achievement]:
         """Get unlocked achievements.
@@ -598,22 +600,19 @@ class AchievementRepository(BaseRepository[Achievement]):
             List of unlocked achievements.
         """
         conn = self.db.connect()
-        results = conn.execute("""
+        cursor = conn.execute("""
             SELECT * FROM achievements
             WHERE is_unlocked = TRUE
             ORDER BY unlocked_at DESC
-        """).fetchall()
+        """)
+        results = cursor.fetchall()
 
-        return (
-            [
-                self._row_to_model(
-                    dict(zip([col[0] for col in results[0].description], row))
-                )
-                for row in results
-            ]
-            if results
-            else []
-        )
+        if not results:
+            return []
+
+        # Get column names from cursor description
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
     def unlock_achievement(self, achievement_id: int) -> Achievement | None:
         """Unlock an achievement.
@@ -625,7 +624,7 @@ class AchievementRepository(BaseRepository[Achievement]):
             Updated achievement if successful.
         """
         conn = self.db.connect()
-        result = conn.execute(
+        cursor = conn.execute(
             """
             UPDATE achievements
             SET is_unlocked = TRUE, unlocked_at = CURRENT_TIMESTAMP
@@ -633,8 +632,9 @@ class AchievementRepository(BaseRepository[Achievement]):
             RETURNING *
         """,
             [achievement_id],
-        ).fetchone()
+        )
+        result = cursor.fetchone()
 
         if result:
-            return self._row_to_model(_row_to_dict(result))
+            return self._row_to_model(_row_to_dict(result, cursor))
         return None

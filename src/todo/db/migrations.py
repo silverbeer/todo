@@ -1,5 +1,6 @@
 """Database migration management."""
 
+import contextlib
 from typing import Any, NamedTuple
 
 from .connection import DatabaseConnection
@@ -108,17 +109,23 @@ class MigrationManager:
         """
         conn = self.db.connect()
 
-        # Get list of all tables
-        tables_result = conn.execute("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'main'
-            AND table_type = 'BASE TABLE'
-        """).fetchall()
+        # Drop tables in reverse dependency order
+        # First drop child tables that reference other tables
+        drop_order = [
+            "ai_enrichments",
+            "ai_learning_feedback",
+            "todos",
+            "daily_activity",
+            "achievements",
+            "user_stats",
+            "recurrence_rules",
+            "categories",
+            "schema_migrations",
+        ]
 
-        # Drop all tables
-        for (table_name,) in tables_result:
-            conn.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+        for table_name in drop_order:
+            with contextlib.suppress(Exception):
+                conn.execute(f"DROP TABLE IF EXISTS {table_name}")
 
         print("🗑️  Dropped all existing tables")
 
