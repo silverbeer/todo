@@ -1,5 +1,6 @@
 """Repository implementations for database operations."""
 
+import json
 from abc import ABC, abstractmethod
 from datetime import date
 from typing import Any, TypeVar
@@ -7,6 +8,9 @@ from uuid import uuid4
 
 from ..models import (
     Achievement,
+    AIEnrichment,
+    AILearningFeedback,
+    AIProvider,
     Category,
     DailyActivity,
     Priority,
@@ -450,6 +454,51 @@ class TodoRepository(BaseRepository[Todo]):
             [points_earned, today],
         )
 
+    def get_all(self, limit: int | None = None) -> list[Todo]:
+        """Get all todos regardless of status.
+
+        Args:
+            limit: Maximum number of todos to return.
+
+        Returns:
+            List of todos.
+        """
+        conn = self.db.connect()
+
+        query = """
+        SELECT t.*
+        FROM todos t
+        ORDER BY
+            CASE t.status
+                WHEN 'pending' THEN 1
+                WHEN 'in_progress' THEN 2
+                WHEN 'completed' THEN 3
+                ELSE 4
+            END,
+            CASE t.final_priority
+                WHEN 'urgent' THEN 1
+                WHEN 'high' THEN 2
+                WHEN 'medium' THEN 3
+                ELSE 4
+            END,
+            t.created_at DESC
+        """
+
+        params = []
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        cursor = conn.execute(query, params)
+        results = cursor.fetchall()
+
+        if not results:
+            return []
+
+        # Get column names from cursor description
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
+
 
 class UserStatsRepository(BaseRepository[UserStats]):
     """Repository for UserStats operations."""
@@ -638,3 +687,195 @@ class AchievementRepository(BaseRepository[Achievement]):
         if result:
             return self._row_to_model(_row_to_dict(result, cursor))
         return None
+
+
+class AIEnrichmentRepository(BaseRepository[AIEnrichment]):
+    """Repository for AI enrichment data."""
+
+    def _get_table_name(self) -> str:
+        return "ai_enrichments"
+
+    def _row_to_model(self, row: dict[str, Any]) -> AIEnrichment:
+        """Convert database row to AIEnrichment model."""
+        # Handle enum conversion with type checking
+        if row.get("provider") and not isinstance(row["provider"], AIProvider):
+            row["provider"] = AIProvider(row["provider"])
+
+        # Handle JSON fields with fallback
+        if row.get("context_keywords"):
+            if isinstance(row["context_keywords"], str):
+                try:
+                    row["context_keywords"] = json.loads(
+                        row["context_keywords"].replace("'", '"')
+                    )
+                except (json.JSONDecodeError, AttributeError):
+                    row["context_keywords"] = []
+        else:
+            row["context_keywords"] = []
+
+        return AIEnrichment(**row)
+
+    def get_by_todo_id(self, todo_id: int) -> list[AIEnrichment]:
+        """Get all AI enrichments for a todo."""
+        conn = self.db.connect()
+        cursor = conn.execute(
+            f"SELECT * FROM {self._get_table_name()} WHERE todo_id = ? ORDER BY created_at DESC",
+            [todo_id],
+        )
+        results = cursor.fetchall()
+        return [self._row_to_model(_row_to_dict(row, cursor)) for row in results]
+
+    def get_latest_by_todo_id(self, todo_id: int) -> AIEnrichment | None:
+        """Get the most recent AI enrichment for a todo."""
+        conn = self.db.connect()
+        cursor = conn.execute(
+            f"SELECT * FROM {self._get_table_name()} WHERE todo_id = ? ORDER BY created_at DESC LIMIT 1",
+            [todo_id],
+        )
+        result = cursor.fetchone()
+        if result:
+            return self._row_to_model(_row_to_dict(result, cursor))
+        return None
+
+    def save_enrichment(self, enrichment: AIEnrichment) -> AIEnrichment:
+        """Save an AI enrichment to the database."""
+        conn = self.db.connect()
+
+        # Serialize context_keywords to JSON
+        context_keywords_json = (
+            json.dumps(enrichment.context_keywords)
+            if enrichment.context_keywords
+            else "[]"
+        )
+
+        cursor = conn.execute(
+            f"""
+            INSERT INTO {self._get_table_name()} (
+                todo_id, provider, model_name, suggested_category,
+                suggested_priority, suggested_size, estimated_duration_minutes,
+                is_recurring_candidate, suggested_recurrence_pattern,
+                reasoning, confidence_score, context_keywords,
+                similar_tasks_found, processing_time_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING *
+        """,
+            [
+                enrichment.todo_id,
+                enrichment.provider.value if enrichment.provider else None,
+                enrichment.model_name,
+                enrichment.suggested_category,
+                enrichment.suggested_priority.value
+                if enrichment.suggested_priority
+                else None,
+                enrichment.suggested_size.value if enrichment.suggested_size else None,
+                enrichment.estimated_duration_minutes,
+                enrichment.is_recurring_candidate,
+                enrichment.suggested_recurrence_pattern,
+                enrichment.reasoning,
+                enrichment.confidence_score,
+                context_keywords_json,
+                enrichment.similar_tasks_found,
+                enrichment.processing_time_ms,
+            ],
+        )
+
+        result = cursor.fetchone()
+        return self._row_to_model(_row_to_dict(result, cursor))
+
+    def create(self, enrichment: AIEnrichment) -> AIEnrichment:
+        """Create method for test compatibility."""
+        return self.save_enrichment(enrichment)
+
+
+class AILearningFeedbackRepository(BaseRepository[AILearningFeedback]):
+    """Repository for AI learning feedback data."""
+
+    def _get_table_name(self) -> str:
+        return "ai_learning_feedback"
+
+    def _row_to_model(self, row: dict[str, Any]) -> AILearningFeedback:
+        """Convert database row to AILearningFeedback model."""
+        # Handle JSON fields with fallback
+        if row.get("context_keywords"):
+            if isinstance(row["context_keywords"], str):
+                try:
+                    row["context_keywords"] = json.loads(
+                        row["context_keywords"].replace("'", '"')
+                    )
+                except (json.JSONDecodeError, AttributeError):
+                    row["context_keywords"] = []
+        else:
+            row["context_keywords"] = []
+
+        return AILearningFeedback(**row)
+
+    def save_feedback(self, feedback: AILearningFeedback) -> AILearningFeedback:
+        """Save AI learning feedback to the database."""
+        conn = self.db.connect()
+
+        # Serialize context_keywords to JSON
+        context_keywords_json = (
+            json.dumps(feedback.context_keywords) if feedback.context_keywords else "[]"
+        )
+
+        cursor = conn.execute(
+            f"""
+            INSERT INTO {self._get_table_name()} (
+                todo_id, enrichment_id, feedback_type, user_override_category,
+                user_override_priority, user_override_size, rejection_reason,
+                context_keywords, model_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING *
+        """,
+            [
+                feedback.todo_id,
+                feedback.enrichment_id,
+                feedback.feedback_type.value,
+                feedback.user_override_category,
+                feedback.user_override_priority.value
+                if feedback.user_override_priority
+                else None,
+                feedback.user_override_size.value
+                if feedback.user_override_size
+                else None,
+                feedback.rejection_reason,
+                context_keywords_json,
+                feedback.model_name,
+            ],
+        )
+
+        result = cursor.fetchone()
+        return self._row_to_model(_row_to_dict(result, cursor))
+
+    def get_feedback_by_todo_id(self, todo_id: int) -> list[AILearningFeedback]:
+        """Get all feedback for a specific todo."""
+        conn = self.db.connect()
+        cursor = conn.execute(
+            f"SELECT * FROM {self._get_table_name()} WHERE todo_id = ? ORDER BY created_at DESC",
+            [todo_id],
+        )
+        results = cursor.fetchall()
+        return [self._row_to_model(_row_to_dict(row, cursor)) for row in results]
+
+    def get_learning_patterns(
+        self, model_name: str, limit: int = 100
+    ) -> list[AILearningFeedback]:
+        """Get recent learning patterns for a specific model."""
+        conn = self.db.connect()
+        cursor = conn.execute(
+            f"""
+            SELECT * FROM {self._get_table_name()}
+            WHERE model_name = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """,
+            [model_name, limit],
+        )
+        results = cursor.fetchall()
+        return [self._row_to_model(_row_to_dict(row, cursor)) for row in results]
+
+    def create(self, feedback: AILearningFeedback) -> AILearningFeedback:
+        """Create method for test compatibility."""
+        return self.save_feedback(feedback)
