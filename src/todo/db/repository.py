@@ -719,7 +719,7 @@ class AIEnrichmentRepository(BaseRepository[AIEnrichment]):
         """Get all AI enrichments for a todo."""
         conn = self.db.connect()
         cursor = conn.execute(
-            f"SELECT * FROM {self._get_table_name()} WHERE todo_id = ? ORDER BY created_at DESC",
+            f"SELECT * FROM {self._get_table_name()} WHERE todo_id = ? ORDER BY enriched_at DESC",
             [todo_id],
         )
         results = cursor.fetchall()
@@ -729,7 +729,7 @@ class AIEnrichmentRepository(BaseRepository[AIEnrichment]):
         """Get the most recent AI enrichment for a todo."""
         conn = self.db.connect()
         cursor = conn.execute(
-            f"SELECT * FROM {self._get_table_name()} WHERE todo_id = ? ORDER BY created_at DESC LIMIT 1",
+            f"SELECT * FROM {self._get_table_name()} WHERE todo_id = ? ORDER BY enriched_at DESC LIMIT 1",
             [todo_id],
         )
         result = cursor.fetchone()

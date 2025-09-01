@@ -1,6 +1,7 @@
 """Main CLI application entry point."""
 
 import asyncio
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -12,7 +13,7 @@ from ..core.config import get_app_config
 from ..db.connection import DatabaseConnection
 from ..db.migrations import MigrationManager
 from ..db.repository import AIEnrichmentRepository, TodoRepository
-from ..models import AIProvider, TodoStatus
+from ..models import AIProvider
 
 console = Console()
 app = typer.Typer(
@@ -101,7 +102,7 @@ def add_todo(
 
 async def _enrich_todo_async(
     todo_id: int, title: str, description: str | None, provider: AIProvider | None
-) -> any | None:
+) -> Any | None:
     """Run AI enrichment asynchronously."""
     enrichment = await enrichment_service.enrich_todo(
         title, description, None, provider
@@ -192,11 +193,21 @@ def list_todos(
         ai_status = "✓" if ai_enrichment else "○"
 
         # Format priority
-        priority = todo.final_priority.value if todo.final_priority else "N/A"
+        if todo.final_priority:
+            priority = (
+                todo.final_priority.value
+                if hasattr(todo.final_priority, "value")
+                else str(todo.final_priority)
+            )
+        else:
+            priority = "N/A"
 
         # Format status
-        status_icon = "✓" if todo.status == TodoStatus.COMPLETED else "○"
-        status_text = f"{status_icon} {todo.status.value.title()}"
+        status_icon = "✓" if str(todo.status).lower() == "completed" else "○"
+        status_value = (
+            todo.status.value if hasattr(todo.status, "value") else str(todo.status)
+        )
+        status_text = f"{status_icon} {status_value.title()}"
 
         table.add_row(
             str(todo.id),
@@ -245,11 +256,33 @@ def show_todo(todo_id: int) -> None:
     info_table.add_column("Field", style="cyan", width=12)
     info_table.add_column("Value", style="white")
 
-    info_table.add_row("Status", todo.status.value.title())
-    info_table.add_row(
-        "Priority", todo.final_priority.value if todo.final_priority else "Not set"
+    # Format status
+    status_value = (
+        todo.status.value if hasattr(todo.status, "value") else str(todo.status)
     )
-    info_table.add_row("Size", todo.final_size.value if todo.final_size else "Not set")
+    info_table.add_row("Status", status_value.title())
+
+    # Format priority
+    if todo.final_priority:
+        priority_value = (
+            todo.final_priority.value
+            if hasattr(todo.final_priority, "value")
+            else str(todo.final_priority)
+        )
+    else:
+        priority_value = "Not set"
+    info_table.add_row("Priority", priority_value)
+
+    # Format size
+    if todo.final_size:
+        size_value = (
+            todo.final_size.value
+            if hasattr(todo.final_size, "value")
+            else str(todo.final_size)
+        )
+    else:
+        size_value = "Not set"
+    info_table.add_row("Size", size_value)
     info_table.add_row("Created", todo.created_at.strftime("%Y-%m-%d %H:%M"))
 
     if todo.completed_at:
@@ -320,7 +353,9 @@ def database_info() -> None:
 
     info_table.add_row("Database Path", config.database.database_path)
     info_table.add_row("Schema Version", str(status["current_version"]))
-    info_table.add_row("Initialized", "✓ Yes" if status["is_initialized"] else "✗ No")
+    info_table.add_row(
+        "Initialized", "✓ Yes" if status["schema_initialized"] else "✗ No"
+    )
     info_table.add_row("Tables", str(len(status.get("tables", []))))
 
     console.print(info_table)
