@@ -58,14 +58,33 @@ uv run pre-commit install
 uv run pre-commit run --all-files
 ```
 
-### 3. Configure API Keys (Optional)
+### 3. Configure AI Features (Optional)
 
-For AI features, copy the example environment file and add your API keys:
+The todo app works without AI features, but for the full experience, set up API keys:
 
 ```bash
+# Copy the example environment file
 cp .env.example .env
-# Edit .env with your OpenAI/Anthropic API keys
+
+# Edit .env with your API keys and preferences
+# Required for AI features:
+OPENAI_API_KEY=your_openai_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+# Optional configuration:
+TODO_DEFAULT_AI_PROVIDER=openai              # or "anthropic"
+TODO_AI_CONFIDENCE_THRESHOLD=0.7             # Auto-apply threshold (0.0-1.0)
+TODO_ENABLE_AI=true                          # Enable/disable AI features
+TODO_OPENAI_MODEL=gpt-4o-mini                # OpenAI model to use
+TODO_ANTHROPIC_MODEL=claude-3-haiku-20240307 # Anthropic model to use
 ```
+
+**Getting API Keys:**
+
+- **OpenAI**: Visit https://platform.openai.com/api-keys
+- **Anthropic**: Visit https://console.anthropic.com/
+
+**Without API Keys**: The app works perfectly for basic todo management. AI features will be gracefully disabled with helpful messages.
 
 ## Using the Todo App
 
@@ -78,15 +97,132 @@ todo --help
 # Show version
 todo version
 
-# Add a new task (basic implementation for now)
+# Add a new task with AI enrichment
 todo add "Buy groceries"
-todo add "Fix the leaky faucet"
+todo add "Fix authentication bug" --desc "Users can't log in"
 
-# Future commands (not implemented yet):
-todo list              # Show all tasks
-todo done 1           # Mark task 1 as complete
-todo stats            # Show productivity stats
+# Add a task with specific AI provider
+todo add "Optimize database queries" --provider anthropic
+
+# Add a task without AI analysis
+todo add "Simple task" --no-ai
+
+# List your todos
+todo list              # Show active tasks
+todo list --all        # Show all tasks including completed
+todo list --limit 20   # Show up to 20 tasks
+
+# Complete a task
+todo done 1            # Mark task 1 as complete
+todo complete 2        # Alternative command
+
+# Show detailed task information
+todo show 1            # View task details and AI analysis
+
+# Manually analyze a task with AI
+todo enrich 1          # Use default provider
+todo enrich 1 --provider openai  # Use specific provider
+
+# Show database information
+todo db                # Database status and migration info
 ```
+
+### AI-Powered Features
+
+The todo app automatically analyzes your tasks using OpenAI or Anthropic AI to provide:
+
+- **Smart Categorization**: Automatically suggests categories for your tasks
+- **Priority Assessment**: Determines task urgency based on content
+- **Size Estimation**: Estimates task complexity (small/medium/large)
+- **Duration Prediction**: Suggests how long tasks might take
+- **Recurrence Detection**: Identifies potentially recurring tasks
+- **Confidence Scoring**: Shows how confident the AI is in its suggestions
+
+Example AI enrichment output:
+```bash
+$ todo add "Fix authentication bug in user service" --desc "Users can't log in"
+
+✓ Added task: Fix authentication bug in user service
+Task ID: 1
+
+🤖 AI analyzing task...
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                           🤖 AI Suggestions                           ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Aspect    │ Suggestion    │ Confidence │
+├───────────┼───────────────┼────────────┤
+│ Category  │ Bug Fix       │ 92.0%      │
+│ Priority  │ High          │ 89.0%      │
+│ Size      │ Medium        │ 85.0%      │
+│ Duration  │ 120min        │ 85.0%      │
+└───────────┴───────────────┴────────────┘
+
+Reasoning: This appears to be a critical bug affecting user access, requiring
+investigation of authentication systems and potential database or session issues.
+
+✓ High confidence suggestions applied automatically
+```
+
+### List View with AI Status
+
+The list command shows your todos with AI enrichment status:
+
+```bash
+$ todo list
+
+                            📋 Your Todos
+┏━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━┓
+┃ ID ┃ Task                                            ┃ Status     ┃ Priority ┃ AI  ┃
+┡━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━┩
+│ 1  │ Fix authentication bug in user service          │ ○ Pending  │ High     │ ✓   │
+│ 2  │ Buy groceries for the weekend                   │ ○ Pending  │ Medium   │ ✓   │
+│ 3  │ Write unit tests for payment processor          │ ○ Pending  │ Medium   │ ○   │
+└────┴─────────────────────────────────────────────────┴────────────┴──────────┴─────┘
+```
+
+### Database Management
+
+The app automatically manages its database schema:
+
+```bash
+$ todo db
+
+                        💾 Database Status
+┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Field         ┃ Value                                            ┃
+┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Database Path │ /Users/you/.local/share/todo/todos.db            │
+│ Schema Version│ 1                                                │
+│ Initialized   │ ✓ Yes                                            │
+│ Tables        │ 8                                                │
+└───────────────┴──────────────────────────────────────────────────┘
+
+Applied Migrations:
+  • v1: Create initial schema with todos, categories, user stats, and AI tables
+```
+
+## Current Implementation Status
+
+### ✅ Fully Implemented Features
+
+- **Core Todo Management**: Add, list, complete, and view tasks
+- **AI Enrichment**: Complete OpenAI and Anthropic integration
+- **Rich Terminal UI**: Beautiful tables, colors, and formatting
+- **Database Layer**: Full DuckDB integration with migrations
+- **Configuration System**: Environment variables with `.env` support
+- **Testing Infrastructure**: 71.67% coverage with E2E testing
+- **Code Quality**: Pre-commit hooks, linting, type checking
+
+### 🚧 Planned Features (Future Releases)
+
+- **Gamification System**: Points, levels, streaks, and achievements
+- **Natural Language Dates**: "due tomorrow", "next Friday" parsing
+- **Export/Import**: JSON, CSV export capabilities
+- **Calendar Integration**: Sync with Google Calendar, Outlook
+- **Team Features**: Shared todo lists and collaboration
+- **Web Dashboard**: Browser-based visualization and management
+- **Mobile App**: Companion mobile application
 
 ### Running Tests
 
@@ -321,34 +457,65 @@ uv run pytest --cov-fail-under=0
 
 ## Technology Stack Details
 
+### Core Application
 - **Python 3.13** - Latest Python with performance improvements
 - **uv** - Fast Python package manager (replacement for pip + virtualenv)
 - **Typer** - Modern CLI framework with excellent developer experience
-- **Rich** - Beautiful terminal formatting and colors
-- **Pydantic** - Data validation using Python type hints
-- **PydanticAI** - Type-safe AI framework
-- **DuckDB** - Fast embedded database (like SQLite but for analytics)
-- **Ruff** - Extremely fast Python linter and formatter
-- **MyPy** - Static type checker for Python
+- **Rich** - Beautiful terminal formatting, tables, and colors
+- **Pydantic** - Data validation and serialization using Python type hints
+- **DuckDB** - Fast embedded analytics database (like SQLite but optimized)
+
+### AI Integration
+- **PydanticAI** - Type-safe AI framework with structured outputs
+- **OpenAI API** - GPT models for task analysis and enrichment
+- **Anthropic API** - Claude models as alternative/fallback provider
+- **python-dotenv** - Environment variable management for API keys
+
+### Development Tools
+- **Ruff** - Extremely fast Python linter and formatter (replaces Black, isort, flake8)
+- **MyPy** - Static type checker for Python with strict type safety
 - **Pytest** - Testing framework with fixtures and parametrization
-- **Pre-commit** - Git hooks for code quality
+- **pytest-cov** - Code coverage measurement and reporting
+- **Pre-commit** - Git hooks for automated code quality checks
+
+### Testing & Quality
+- **71.67% Test Coverage** - Comprehensive unit, integration, and E2E tests
+- **Isolated Test Databases** - Each test uses its own temporary database
+- **Mocked AI Responses** - Consistent testing without API dependencies
+- **Pre-commit Hooks** - Automatic linting, formatting, and validation
 
 ## Project Structure
 
 ```
 todo/
 ├── src/todo/              # Main application code
-│   ├── ai/                # AI enrichment modules
+│   ├── ai/                # AI enrichment system
+│   │   ├── enrichment_service.py  # Main AI service orchestrator
+│   │   ├── providers.py           # OpenAI/Anthropic provider abstractions
+│   │   ├── enrichment.py          # AI prompts and structured responses
+│   │   ├── learning.py            # Feedback collection and learning
+│   │   └── background.py          # Async background processing
 │   ├── cli/               # Command-line interface
+│   │   └── main.py        # Full CLI with Rich terminal formatting
 │   ├── core/              # Core business logic
-│   └── db/                # Database operations
-├── tests/                 # Test files
-│   ├── unit/              # Unit tests
-│   ├── integration/       # Integration tests
-│   └── e2e/               # End-to-end tests
-├── docs/                  # Implementation documentation
+│   │   └── config.py      # Configuration management with .env support
+│   ├── db/                # Database operations
+│   │   ├── repository.py  # All repository implementations
+│   │   ├── connection.py  # Database connection management
+│   │   └── migrations.py  # Schema management and migrations
+│   └── models.py          # Pydantic data models
+├── tests/                 # Test files (71.67% coverage)
+│   ├── unit/              # Unit tests for individual components
+│   ├── integration/       # Integration tests for component interactions
+│   ├── e2e/               # End-to-end CLI testing with isolated databases
+│   ├── test_ai.py         # AI service and provider tests
+│   ├── test_cli.py        # CLI command tests
+│   ├── test_repository.py # Database repository tests
+│   └── test_db_components.py # Database connection and migration tests
+├── docs/                  # Implementation documentation and planning
 ├── pyproject.toml         # Project configuration (replaces setup.py, requirements.txt)
 ├── .pre-commit-config.yaml # Pre-commit hook configuration
+├── .env.example           # Example environment configuration
 └── README.md              # This file
 ```
 

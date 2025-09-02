@@ -4,6 +4,8 @@ from .connection import DatabaseConnection
 from .migrations import MigrationManager
 from .repository import (
     AchievementRepository,
+    AIEnrichmentRepository,
+    AILearningFeedbackRepository,
     CategoryRepository,
     DailyActivityRepository,
     TodoRepository,
@@ -18,4 +20,6 @@ __all__ = [
     "UserStatsRepository",
     "DailyActivityRepository",
     "AchievementRepository",
+    "AIEnrichmentRepository",
+    "AILearningFeedbackRepository",
 ]
