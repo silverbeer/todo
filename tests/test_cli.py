@@ -250,14 +250,21 @@ class TestCLICommands:
         mock_todo.description = "Test description"
         mock_todo.status = Mock()
         mock_todo.status.value = "pending"
+        mock_todo.status.__format__ = Mock(return_value="pending")
         mock_todo.final_priority = Mock()
         mock_todo.final_priority.value = "medium"
+        mock_todo.final_priority.__format__ = Mock(return_value="medium")
         mock_todo.final_size = Mock()
         mock_todo.final_size.value = "medium"
+        mock_todo.final_size.__format__ = Mock(return_value="medium")
         mock_todo.due_date = None
+        mock_todo.created_at = Mock()
+        mock_todo.created_at.strftime = Mock(return_value="2025-01-01 12:00")
+        mock_todo.completed_at = None
+        mock_todo.total_points_earned = None
 
         mock_todo_repo.get_by_id.return_value = mock_todo
-        mock_ai_repo.get_by_todo_id.return_value = None
+        mock_ai_repo.get_latest_by_todo_id.return_value = None
 
         result = runner.invoke(app, ["show", "1"])
 
@@ -361,7 +368,7 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         assert "💾 Database Status" in result.stdout
-        assert "✓ Initialized" in result.stdout
+        assert "✓ Yes" in result.stdout
         assert "v1" in result.stdout
         assert "/test/path/db.db" in result.stdout
 
@@ -519,11 +526,18 @@ class TestCLIIntegration:
         mock_todo.description = None
         mock_todo.status = Mock()
         mock_todo.status.value = "pending"
+        mock_todo.status.__format__ = Mock(return_value="pending")
         mock_todo.final_priority = Mock()
         mock_todo.final_priority.value = "medium"
+        mock_todo.final_priority.__format__ = Mock(return_value="medium")
         mock_todo.final_size = Mock()
         mock_todo.final_size.value = "medium"
+        mock_todo.final_size.__format__ = Mock(return_value="medium")
         mock_todo.due_date = None
+        mock_todo.created_at = Mock()
+        mock_todo.created_at.strftime = Mock(return_value="2025-01-01 12:00")
+        mock_todo.completed_at = None
+        mock_todo.total_points_earned = None
 
         mock_enrichment = Mock()
         mock_enrichment.confidence_score = 0.8
@@ -538,7 +552,7 @@ class TestCLIIntegration:
         mock_enrichment.suggested_recurrence_pattern = None
 
         mock_todo_repo.get_by_id.return_value = mock_todo
-        mock_ai_repo.get_by_todo_id.return_value = mock_enrichment
+        mock_ai_repo.get_latest_by_todo_id.return_value = mock_enrichment
 
         result = runner.invoke(app, ["show", "1"])
 

@@ -58,10 +58,23 @@ def add_todo(
 ) -> None:
     """Add a new todo task with optional AI enrichment."""
 
+    # Validate input
+    if not task or not task.strip():
+        console.print("[red]✗ Task title cannot be empty[/red]")
+        return
+
     # Create the basic todo
-    todo = todo_repo.create_todo(task, description)
-    console.print(f"[green]✓ Added task:[/green] {task}")
-    console.print(f"[dim]Task ID: {todo.id}[/dim]")
+    try:
+        todo = todo_repo.create_todo(task.strip(), description)
+        console.print(f"[green]✓ Added task:[/green] {task.strip()}")
+        console.print(f"[dim]Task ID: {todo.id}[/dim]")
+    except Exception as e:
+        error_msg = str(e)
+        if "string_too_short" in error_msg or "at least 1 character" in error_msg:
+            console.print("[red]✗ Task title cannot be empty[/red]")
+        else:
+            console.print(f"[red]✗ Error creating task: {error_msg}[/red]")
+        return
 
     # AI enrichment
     if not no_ai and config.ai.enable_auto_enrichment:
@@ -151,9 +164,25 @@ def _display_enrichment_results(enrichment) -> None:
 
 def _apply_enrichment(todo_id: int, enrichment) -> None:
     """Apply AI enrichment to a todo."""
-    # This would update the todo with AI suggestions
-    # For now, just mark that enrichment exists
-    pass
+    try:
+        # Prepare updates based on AI suggestions
+        updates = {}
+
+        if enrichment.suggested_size:
+            updates["final_size"] = enrichment.suggested_size.value
+
+        if enrichment.suggested_priority:
+            updates["final_priority"] = enrichment.suggested_priority.value
+
+        # Apply updates to the todo
+        if updates:
+            todo_repo.update_todo(todo_id, updates)
+
+    except Exception as e:
+        # Don't fail silently, but don't crash the CLI either
+        console.print(
+            f"[yellow]⚠ Warning: Could not apply AI suggestions: {e}[/yellow]"
+        )
 
 
 @app.command("list")
@@ -168,11 +197,24 @@ def list_todos(
 ) -> None:
     """List active todos with AI enrichment status."""
 
-    if all_todos:
-        # For now, just show active todos
-        todos = todo_repo.get_all()[:limit]
-    else:
-        todos = todo_repo.get_active_todos(limit)
+    try:
+        if all_todos:
+            # For now, just show active todos
+            todos = todo_repo.get_all()[:limit]
+        else:
+            todos = todo_repo.get_active_todos(limit)
+    except Exception as e:
+        error_msg = str(e)
+        if "string_too_short" in error_msg or "at least 1 character" in error_msg:
+            console.print(
+                "[red]✗ Found invalid todos with empty titles in database[/red]"
+            )
+            console.print(
+                "[dim]Run 'todo db' to check database status or contact support[/dim]"
+            )
+        else:
+            console.print(f"[red]✗ Error retrieving todos: {error_msg}[/red]")
+        return
 
     if not todos:
         console.print("[yellow]No active todos found[/yellow]")
@@ -183,6 +225,7 @@ def list_todos(
     table = Table(title="📋 Your Todos", show_header=True, header_style="bold blue")
     table.add_column("ID", style="cyan", width=3)
     table.add_column("Task", style="white")
+    table.add_column("Category", style="blue", width=10)
     table.add_column("Status", style="green")
     table.add_column("Priority", style="yellow")
     table.add_column("AI", style="magenta", width=3)
@@ -192,12 +235,24 @@ def list_todos(
         ai_enrichment = ai_repo.get_latest_by_todo_id(todo.id)
         ai_status = "✓" if ai_enrichment else "○"
 
+        # Format category
+        if todo.category_id and todo.category:
+            category = (
+                todo.category.name
+                if hasattr(todo.category, "name")
+                else str(todo.category)
+            )
+        elif ai_enrichment and ai_enrichment.suggested_category:
+            category = ai_enrichment.suggested_category
+        else:
+            category = "General"
+
         # Format priority
         if todo.final_priority:
             priority = (
-                todo.final_priority.value
+                todo.final_priority.value.upper()
                 if hasattr(todo.final_priority, "value")
-                else str(todo.final_priority)
+                else str(todo.final_priority).upper()
             )
         else:
             priority = "N/A"
@@ -212,6 +267,7 @@ def list_todos(
         table.add_row(
             str(todo.id),
             todo.title[:60] + "..." if len(todo.title) > 60 else todo.title,
+            category[:10],  # Truncate category to fit column width
             status_text,
             priority,
             ai_status,
@@ -224,16 +280,60 @@ def list_todos(
 @app.command("complete")
 def complete_todo(todo_id: int) -> None:
     """Mark a todo as completed."""
-    todo = todo_repo.complete_todo(todo_id)
+    try:
+        todo = todo_repo.complete_todo(todo_id)
 
-    if todo:
-        console.print(f"[green]✓ Completed:[/green] {todo.title}")
-        if todo.total_points_earned:
+        if todo:
+            console.print(f"[green]✓ Completed:[/green] {todo.title}")
+
+            # Display gamification results
+            if hasattr(todo, "scoring_result") and todo.scoring_result:
+                scoring = todo.scoring_result
+
+                # Points breakdown
+                if scoring["bonus_points"] > 0:
+                    console.print(
+                        f"[yellow]🎉 Earned {scoring['total_points']} points! "
+                        f"({scoring['base_points']} base + {scoring['bonus_points']} bonus)[/yellow]"
+                    )
+                else:
+                    console.print(
+                        f"[yellow]🎉 Earned {scoring['total_points']} points![/yellow]"
+                    )
+
+                # Streak information
+                if scoring["new_streak"] > 1:
+                    console.print(
+                        f"[blue]🔥 {scoring['new_streak']}-day streak![/blue]"
+                    )
+
+                # Level up notification
+                if scoring["level_up"]:
+                    console.print(
+                        f"[magenta]⭐ Level up! You're now level {scoring['new_level']}![/magenta]"
+                    )
+
+                # Daily goal achievement
+                if scoring["daily_goal_met"]:
+                    console.print("[green]🎯 Daily goal achieved![/green]")
+
+            elif todo.total_points_earned:
+                # Fallback for basic points display
+                console.print(
+                    f"[yellow]🎉 Earned {todo.total_points_earned} points![/yellow]"
+                )
+        else:
+            console.print(f"[red]✗ Todo {todo_id} not found or already completed[/red]")
+    except Exception as e:
+        error_msg = str(e)
+        if "foreign key constraint" in error_msg.lower():
             console.print(
-                f"[yellow]🎉 Earned {todo.total_points_earned} points![/yellow]"
+                f"[red]✗ Cannot complete todo {todo_id}: This todo has related data that must be cleaned up first[/red]"
             )
-    else:
-        console.print(f"[red]✗ Todo {todo_id} not found or already completed[/red]")
+        elif "not found" in error_msg.lower():
+            console.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        else:
+            console.print(f"[red]✗ Error completing todo {todo_id}: {error_msg}[/red]")
 
 
 @app.command("show")
@@ -271,7 +371,7 @@ def show_todo(todo_id: int) -> None:
         )
     else:
         priority_value = "Not set"
-    info_table.add_row("Priority", priority_value)
+    info_table.add_row("Priority", str(priority_value))
 
     # Format size
     if todo.final_size:
@@ -282,7 +382,7 @@ def show_todo(todo_id: int) -> None:
         )
     else:
         size_value = "Not set"
-    info_table.add_row("Size", size_value)
+    info_table.add_row("Size", str(size_value))
     info_table.add_row("Created", todo.created_at.strftime("%Y-%m-%d %H:%M"))
 
     if todo.completed_at:
@@ -311,32 +411,130 @@ def enrich_todo(
     ),
 ) -> None:
     """Manually enrich a todo with AI analysis."""
-    todo = todo_repo.get_by_id(todo_id)
+    try:
+        todo = todo_repo.get_by_id(todo_id)
 
-    if not todo:
-        console.print(f"[red]✗ Todo {todo_id} not found[/red]")
-        return
-
-    console.print(f"[blue]🤖 Analyzing task: {todo.title}...[/blue]")
-
-    ai_provider = None
-    if provider:
-        try:
-            ai_provider = AIProvider(provider)
-        except ValueError:
-            console.print(f"[red]Invalid provider: {provider}[/red]")
+        if not todo:
+            console.print(f"[red]✗ Todo {todo_id} not found[/red]")
             return
 
-    # Get AI enrichment
-    enrichment = asyncio.run(
-        _enrich_todo_async(todo_id, todo.title, todo.description, ai_provider)
-    )
+        console.print(f"[blue]🤖 Analyzing task: {todo.title}...[/blue]")
 
-    if enrichment:
-        _display_enrichment_results(enrichment)
-        console.print("\n[green]✓ AI analysis completed and saved[/green]")
-    else:
-        console.print("[red]✗ AI enrichment failed[/red]")
+        ai_provider = None
+        if provider:
+            try:
+                ai_provider = AIProvider(provider)
+            except ValueError:
+                console.print(f"[red]✗ Invalid AI provider: {provider}[/red]")
+                console.print("[dim]Available providers: openai, anthropic[/dim]")
+                return
+
+        # Get AI enrichment
+        enrichment = asyncio.run(
+            _enrich_todo_async(todo_id, todo.title, todo.description, ai_provider)
+        )
+
+        if enrichment:
+            _display_enrichment_results(enrichment)
+            console.print("\n[green]✓ AI analysis completed and saved[/green]")
+        else:
+            console.print("[red]✗ AI enrichment failed[/red]")
+
+    except Exception as e:
+        error_msg = str(e)
+        if "todo" in error_msg.lower() and "not found" in error_msg.lower():
+            console.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        else:
+            console.print(f"[red]✗ Error enriching todo: {error_msg}[/red]")
+
+
+@app.command("stats")
+def show_stats() -> None:
+    """Show user progress and statistics."""
+    from ..core.scoring import ScoringService
+
+    try:
+        scoring_service = ScoringService(db)
+        progress = scoring_service.get_user_progress()
+
+        console.print("\n[bold cyan]📊 Your Progress[/bold cyan]")
+
+        # Create stats table
+        stats_table = Table(show_header=False, show_edge=False, padding=(0, 2))
+        stats_table.add_column("Metric", style="cyan", width=20)
+        stats_table.add_column("Value", style="white")
+
+        stats_table.add_row("Level", f"⭐ {progress['level']}")
+        stats_table.add_row("Total Points", f"🎯 {progress['total_points']}")
+        stats_table.add_row(
+            "Points to Next Level", f"📈 {progress['points_to_next_level']}"
+        )
+        stats_table.add_row("Current Streak", f"🔥 {progress['current_streak']} days")
+        stats_table.add_row("Longest Streak", f"🏆 {progress['longest_streak']} days")
+        stats_table.add_row("Tasks Completed", f"✅ {progress['total_completed']}")
+
+        # Today's progress
+        stats_table.add_row("", "")  # Spacer
+        stats_table.add_row("Today's Tasks", f"📋 {progress['tasks_completed_today']}")
+        stats_table.add_row("Daily Goal", f"🎯 {progress['daily_goal']}")
+        stats_table.add_row("Today's Points", f"🎉 {progress['points_earned_today']}")
+
+        goal_status = (
+            "✅ Met"
+            if progress["daily_goal_met"]
+            else f"⏳ {progress['daily_goal'] - progress['tasks_completed_today']} more to go"
+        )
+        stats_table.add_row("Goal Status", goal_status)
+
+        console.print(stats_table)
+
+        # Progress bar for level
+        if progress["points_to_next_level"] > 0:
+            # Calculate progress within current level
+            # For level 1: 0-99 points (need 100 total)
+            # For level 2: 100-249 points (need 250 total), etc.
+            scoring_service = ScoringService(db)
+            current_level = progress["level"]
+            total_points = progress["total_points"]
+
+            # Get the points needed for current level and next level
+            if current_level <= len(scoring_service.level_thresholds):
+                current_level_threshold = (
+                    scoring_service.level_thresholds[current_level - 1]
+                    if current_level > 1
+                    else 0
+                )
+                next_level_threshold = (
+                    scoring_service.level_thresholds[current_level]
+                    if current_level < len(scoring_service.level_thresholds)
+                    else float("inf")
+                )
+
+                if next_level_threshold != float("inf"):
+                    # Points earned toward this level
+                    points_in_level = total_points - current_level_threshold
+                    # Total points needed for this level
+                    points_needed_for_level = (
+                        next_level_threshold - current_level_threshold
+                    )
+                    # Progress percentage
+                    progress_pct = (points_in_level / points_needed_for_level) * 100
+
+                    from rich.progress import BarColumn, Progress, TextColumn
+
+                    with Progress(
+                        TextColumn("[bold blue]Level Progress"),
+                        BarColumn(bar_width=30),
+                        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                        console=console,
+                    ) as progress_bar:
+                        task = progress_bar.add_task("Level", total=100)
+                        progress_bar.update(
+                            task, completed=max(0, min(100, progress_pct))
+                        )
+
+    except Exception as e:
+        console.print(f"[red]✗ Error retrieving stats: {e}[/red]")
 
 
 @app.command("db")
