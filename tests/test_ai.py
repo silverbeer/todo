@@ -177,8 +177,8 @@ class TestAIRepositories:
         )
         ai_enrichment_repo.create(enrichment)
 
-        # Retrieve by todo ID
-        retrieved = ai_enrichment_repo.get_by_todo_id(sample_todo.id)
+        # Retrieve by todo ID (should get the latest one)
+        retrieved = ai_enrichment_repo.get_latest_by_todo_id(sample_todo.id)
 
         assert retrieved is not None
         assert retrieved.todo_id == sample_todo.id

@@ -100,7 +100,96 @@ class MigrationManager:
             self.initialize_schema()
         else:
             current_version = self.get_current_version()
-            print(f"✅ Database schema is up to date (v{current_version})")
+            # Run any pending migrations
+            if current_version < 2:
+                self._run_migration_v2_fix_foreign_keys()
+            print(f"✅ Database schema is up to date (v{self.get_current_version()})")
+
+    def _run_migration_v2_fix_foreign_keys(self) -> None:
+        """Migration v2: Fix DuckDB foreign key constraints for ai_enrichments table."""
+        conn = self.db.connect()
+
+        try:
+            print("🔧 Running migration v2: Fixing foreign key constraints...")
+
+            # Check if we need to run this migration
+            current_version = self.get_current_version()
+            if current_version >= 2:
+                return
+
+            # Save existing ai_enrichments data if table exists
+            backup_data = []
+            try:
+                backup_data = conn.execute("SELECT * FROM ai_enrichments").fetchall()
+                print(
+                    f"📦 Backing up {len(backup_data)} existing AI enrichment records"
+                )
+            except Exception:
+                print("📋 No existing ai_enrichments table found - creating new one")
+
+            # Drop the problematic table
+            conn.execute("DROP TABLE IF EXISTS ai_enrichments")
+
+            # Recreate the table with proper foreign key constraint
+            conn.execute("""
+                CREATE SEQUENCE IF NOT EXISTS ai_enrichments_id_seq;
+                CREATE TABLE IF NOT EXISTS ai_enrichments (
+                    id INTEGER PRIMARY KEY DEFAULT nextval('ai_enrichments_id_seq'),
+                    todo_id INTEGER NOT NULL,
+                    provider VARCHAR(20) NOT NULL CHECK (provider IN ('openai', 'anthropic')),
+                    model_name VARCHAR(50) NOT NULL,
+
+                    -- AI suggestions
+                    suggested_category VARCHAR(50),
+                    suggested_priority VARCHAR(10) CHECK (suggested_priority IN ('low', 'medium', 'high', 'urgent')),
+                    suggested_size VARCHAR(10) CHECK (suggested_size IN ('small', 'medium', 'large')),
+                    estimated_duration_minutes INTEGER CHECK (estimated_duration_minutes > 0),
+
+                    -- Recurrence detection
+                    is_recurring_candidate BOOLEAN DEFAULT FALSE,
+                    suggested_recurrence_pattern VARCHAR(100),
+
+                    -- AI reasoning and confidence
+                    reasoning TEXT,
+                    confidence_score REAL DEFAULT 0.5 CHECK (confidence_score BETWEEN 0.0 AND 1.0),
+
+                    -- Context
+                    context_keywords TEXT,  -- JSON array of keywords
+                    similar_tasks_found INTEGER DEFAULT 0 CHECK (similar_tasks_found >= 0),
+
+                    -- Performance tracking
+                    enriched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    processing_time_ms INTEGER CHECK (processing_time_ms >= 0)
+                );
+            """)
+
+            # Restore data
+            for row in backup_data:
+                placeholders = ", ".join(["?" for _ in row[1:]])  # Skip id column
+                conn.execute(
+                    f"INSERT INTO ai_enrichments (todo_id, provider, model_name, suggested_category, suggested_priority, suggested_size, estimated_duration_minutes, is_recurring_candidate, suggested_recurrence_pattern, reasoning, confidence_score, context_keywords, similar_tasks_found, enriched_at, processing_time_ms) VALUES ({placeholders})",
+                    row[1:],
+                )
+
+            # Recreate indexes
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ai_enrichments_todo ON ai_enrichments(todo_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ai_enrichments_provider ON ai_enrichments(provider)"
+            )
+
+            # Record the migration
+            conn.execute("""
+                INSERT INTO schema_migrations (version, name)
+                VALUES (2, 'fix_foreign_key_constraints')
+            """)
+
+            print("✅ Migration v2 completed: Foreign key constraints fixed")
+
+        except Exception as e:
+            print(f"❌ Migration v2 failed: {e}")
+            raise
 
     def reset_database(self) -> None:
         """Reset database by dropping all tables and reinitializing.

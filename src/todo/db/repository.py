@@ -189,6 +189,10 @@ class TodoRepository(BaseRepository[Todo]):
 
     def _row_to_model(self, row: dict[str, Any]) -> Todo:
         """Convert database row to Todo model."""
+        # Validate title is not empty (skip invalid records)
+        if not row.get("title") or not row.get("title").strip():
+            raise ValueError(f"Invalid todo with empty title (ID: {row.get('id')})")
+
         # Handle enum conversions
         if row.get("status"):
             row["status"] = TodoStatus(row["status"])
@@ -271,7 +275,19 @@ class TodoRepository(BaseRepository[Todo]):
 
         # Get column names from cursor description
         column_names = [desc[0] for desc in cursor.description]
-        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
+
+        # Filter out invalid todos during conversion
+        valid_todos = []
+        for row in results:
+            try:
+                todo = self._row_to_model(dict(zip(column_names, row)))
+                valid_todos.append(todo)
+            except ValueError as e:
+                # Skip invalid todos (e.g., with empty titles)
+                print(f"Warning: Skipping invalid todo: {e}")
+                continue
+
+        return valid_todos
 
     def get_overdue_todos(self) -> list[Todo]:
         """Get todos that are overdue.
@@ -298,7 +314,7 @@ class TodoRepository(BaseRepository[Todo]):
         return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
     def complete_todo(self, todo_id: int) -> Todo | None:
-        """Mark todo as completed and calculate points.
+        """Mark todo as completed and calculate points using the scoring system.
 
         Args:
             todo_id: ID of the todo to complete.
@@ -314,12 +330,19 @@ class TodoRepository(BaseRepository[Todo]):
             if not todo or todo.status == TodoStatus.COMPLETED:
                 return None
 
-            # Calculate points
-            base_points = self._calculate_base_points(todo.final_size)
-            bonus_points = 0  # TODO: Implement bonus calculation
-            total_points = base_points + bonus_points
+            # Use scoring system for comprehensive point calculation
+            from ..core.scoring import ScoringService
 
-            # Update todo
+            scoring_service = ScoringService(self.db)
+
+            # Apply full scoring logic
+            scoring_result = scoring_service.apply_completion_scoring(todo)
+
+            base_points = scoring_result["base_points"]
+            bonus_points = scoring_result["bonus_points"]
+            total_points = scoring_result["total_points"]
+
+            # Update todo with completion info and calculated points
             result = conn.execute(
                 """
                 UPDATE todos
@@ -337,14 +360,80 @@ class TodoRepository(BaseRepository[Todo]):
             if result.rowcount == 0:
                 return None
 
-            # Update stats
-            self._update_completion_stats(conn, total_points)
-
             # Get updated todo
-            return self.get_by_id(todo_id)
+            completed_todo = self.get_by_id(todo_id)
+
+            # Return tuple with todo and scoring results for CLI display
+            if completed_todo:
+                # Create a simple object to hold both todo and scoring info
+                class TodoWithScoring:
+                    def __init__(self, todo: Todo, scoring_result: dict):
+                        # Copy all todo attributes
+                        from contextlib import suppress
+
+                        for attr in dir(todo):
+                            if not attr.startswith("_"):
+                                with suppress(AttributeError, TypeError):
+                                    setattr(self, attr, getattr(todo, attr))
+                        self.scoring_result = scoring_result
+
+                return TodoWithScoring(completed_todo, scoring_result)
+
+            return completed_todo
 
         except Exception as e:
-            raise e
+            # Provide more helpful error messages
+            error_msg = str(e).lower()
+            if "foreign key constraint" in error_msg:
+                raise Exception(
+                    f"Cannot complete todo {todo_id}: There are related records that prevent this operation"
+                ) from e
+            elif "not found" in error_msg:
+                raise Exception(f"Todo {todo_id} not found") from e
+            else:
+                raise Exception(
+                    f"Database error while completing todo {todo_id}: {str(e)}"
+                ) from e
+
+    def update_todo(self, todo_id: int, updates: dict[str, Any]) -> Todo | None:
+        """Update a todo with given field values.
+
+        Args:
+            todo_id: ID of the todo to update.
+            updates: Dictionary of field names and new values.
+
+        Returns:
+            Updated todo if successful, None otherwise.
+        """
+        conn = self.db.connect()
+
+        # Build update query
+        set_clauses = []
+        values = []
+        for field, value in updates.items():
+            set_clauses.append(f"{field} = ?")
+            values.append(value)
+
+        if not set_clauses:
+            return self.get_by_id(todo_id)
+
+        values.append(todo_id)  # For WHERE clause
+
+        query = f"""
+            UPDATE todos
+            SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """
+
+        try:
+            result = conn.execute(query, values)
+
+            if result.rowcount > 0:
+                return self.get_by_id(todo_id)
+            return None
+
+        except Exception as e:
+            raise Exception(f"Error updating todo {todo_id}: {str(e)}") from e
 
     def get_by_uuid(self, uuid: str) -> Todo | None:
         """Get todo by UUID.
@@ -357,46 +446,6 @@ class TodoRepository(BaseRepository[Todo]):
         """
         conn = self.db.connect()
         cursor = conn.execute("SELECT * FROM todos WHERE uuid = ?", [uuid])
-        result = cursor.fetchone()
-
-        if result:
-            return self._row_to_model(_row_to_dict(result, cursor))
-        return None
-
-    def update_todo(self, todo_id: int, updates: dict[str, Any]) -> Todo | None:
-        """Update todo with given fields.
-
-        Args:
-            todo_id: ID of the todo to update.
-            updates: Fields to update.
-
-        Returns:
-            Updated todo if successful, None otherwise.
-        """
-        if not updates:
-            return self.get_by_id(todo_id)
-
-        conn = self.db.connect()
-
-        # Convert enum values to strings
-        for key, value in updates.items():
-            if hasattr(value, "value"):  # Enum handling
-                updates[key] = value.value
-
-        # Build update query
-        set_clauses = [f"{key} = ?" for key in updates]
-        set_clause = ", ".join(set_clauses)
-        values = list(updates.values()) + [todo_id]
-
-        cursor = conn.execute(
-            f"""
-            UPDATE todos
-            SET {set_clause}, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            RETURNING *
-        """,
-            values,
-        )
         result = cursor.fetchone()
 
         if result:
@@ -420,39 +469,14 @@ class TodoRepository(BaseRepository[Todo]):
         return points_map.get(size, 3)
 
     def _update_completion_stats(self, conn: Any, points_earned: int) -> None:
-        """Update user stats and daily activity after completion.
+        """Legacy method - now handled by ScoringService.
 
-        Args:
-            conn: Database connection.
-            points_earned: Points earned from completion.
+        This method is deprecated in favor of the comprehensive ScoringService.
+        Keeping for compatibility but functionality moved to scoring system.
         """
-        today = date.today()
-
-        # Upsert daily activity
-        conn.execute(
-            """
-            INSERT INTO daily_activity (activity_date, tasks_completed, total_points_earned)
-            VALUES (?, 1, ?)
-            ON CONFLICT(activity_date)
-            DO UPDATE SET
-                tasks_completed = daily_activity.tasks_completed + 1,
-                total_points_earned = daily_activity.total_points_earned + ?,
-                updated_at = now()
-        """,
-            [today, points_earned, points_earned],
-        )
-
-        # Update user stats
-        conn.execute(
-            """
-            UPDATE user_stats
-            SET total_tasks_completed = total_tasks_completed + 1,
-                total_points = total_points + ?,
-                last_completion_date = ?,
-                updated_at = now()
-        """,
-            [points_earned, today],
-        )
+        # This method is now handled by ScoringService.apply_completion_scoring()
+        # Keeping for backward compatibility but no longer used
+        pass
 
     def get_all(self, limit: int | None = None) -> list[Todo]:
         """Get all todos regardless of status.
@@ -611,6 +635,96 @@ class DailyActivityRepository(BaseRepository[DailyActivity]):
         # Get column names from cursor description
         column_names = [desc[0] for desc in cursor.description]
         return [self._row_to_model(dict(zip(column_names, row))) for row in results]
+
+    def get_activity_for_date(self, activity_date: date) -> DailyActivity | None:
+        """Get activity record for specific date.
+
+        Args:
+            activity_date: Date to get activity for.
+
+        Returns:
+            Activity record or None if not found.
+        """
+        conn = self.db.connect()
+        cursor = conn.execute(
+            "SELECT * FROM daily_activity WHERE activity_date = ?", [activity_date]
+        )
+        result = cursor.fetchone()
+
+        if result:
+            return self._row_to_model(_row_to_dict(result, cursor))
+        return None
+
+    def update_activity(
+        self, activity_date: date, updates: dict[str, Any]
+    ) -> DailyActivity | None:
+        """Update activity record for specific date.
+
+        Args:
+            activity_date: Date to update activity for.
+            updates: Dictionary of fields to update.
+
+        Returns:
+            Updated activity record or None if not found.
+        """
+        conn = self.db.connect()
+
+        # Build update query
+        set_clauses = []
+        values = []
+        for field, value in updates.items():
+            set_clauses.append(f"{field} = ?")
+            values.append(value)
+
+        if not set_clauses:
+            return None
+
+        values.append(activity_date)  # For WHERE clause
+
+        query = f"""
+            UPDATE daily_activity
+            SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
+            WHERE activity_date = ?
+        """
+
+        result = conn.execute(query, values)
+
+        if result.rowcount > 0:
+            return self.get_activity_for_date(activity_date)
+        return None
+
+    def create_activity(
+        self,
+        activity_date: date,
+        tasks_completed: int = 0,
+        total_points_earned: int = 0,
+        daily_goal_met: bool = False,
+    ) -> DailyActivity:
+        """Create new activity record.
+
+        Args:
+            activity_date: Date of activity.
+            tasks_completed: Number of tasks completed.
+            total_points_earned: Total points earned.
+            daily_goal_met: Whether daily goal was met.
+
+        Returns:
+            Created activity record.
+        """
+        conn = self.db.connect()
+
+        cursor = conn.execute(
+            """
+            INSERT INTO daily_activity (
+                activity_date, tasks_completed, total_points_earned, daily_goal_met
+            ) VALUES (?, ?, ?, ?)
+            RETURNING *
+        """,
+            [activity_date, tasks_completed, total_points_earned, daily_goal_met],
+        )
+
+        result = cursor.fetchone()
+        return self._row_to_model(_row_to_dict(result, cursor))
 
 
 class AchievementRepository(BaseRepository[Achievement]):
@@ -797,16 +911,16 @@ class AILearningFeedbackRepository(BaseRepository[AILearningFeedback]):
     def _row_to_model(self, row: dict[str, Any]) -> AILearningFeedback:
         """Convert database row to AILearningFeedback model."""
         # Handle JSON fields with fallback
-        if row.get("context_keywords"):
-            if isinstance(row["context_keywords"], str):
+        if row.get("task_keywords"):
+            if isinstance(row["task_keywords"], str):
                 try:
-                    row["context_keywords"] = json.loads(
-                        row["context_keywords"].replace("'", '"')
+                    row["task_keywords"] = json.loads(
+                        row["task_keywords"].replace("'", '"')
                     )
                 except (json.JSONDecodeError, AttributeError):
-                    row["context_keywords"] = []
+                    row["task_keywords"] = []
         else:
-            row["context_keywords"] = []
+            row["task_keywords"] = []
 
         return AILearningFeedback(**row)
 
@@ -814,40 +928,60 @@ class AILearningFeedbackRepository(BaseRepository[AILearningFeedback]):
         """Save AI learning feedback to the database."""
         conn = self.db.connect()
 
-        # Serialize context_keywords to JSON
-        context_keywords_json = (
-            json.dumps(feedback.context_keywords) if feedback.context_keywords else "[]"
+        # Serialize task_keywords to JSON
+        task_keywords_json = (
+            json.dumps(feedback.task_keywords) if feedback.task_keywords else "[]"
         )
 
         cursor = conn.execute(
             f"""
             INSERT INTO {self._get_table_name()} (
-                todo_id, enrichment_id, feedback_type, user_override_category,
-                user_override_priority, user_override_size, rejection_reason,
-                context_keywords, model_name
+                original_task_text, ai_provider, ai_suggested_category,
+                ai_suggested_size, ai_suggested_priority, user_corrected_category,
+                user_corrected_size, user_corrected_priority, task_keywords,
+                correction_type
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *
         """,
             [
-                feedback.todo_id,
-                feedback.enrichment_id,
-                feedback.feedback_type.value,
-                feedback.user_override_category,
-                feedback.user_override_priority.value
-                if feedback.user_override_priority
+                feedback.original_task_text,
+                feedback.ai_provider.value,
+                feedback.ai_suggested_category,
+                feedback.ai_suggested_size.value
+                if feedback.ai_suggested_size
                 else None,
-                feedback.user_override_size.value
-                if feedback.user_override_size
+                feedback.ai_suggested_priority.value
+                if feedback.ai_suggested_priority
                 else None,
-                feedback.rejection_reason,
-                context_keywords_json,
-                feedback.model_name,
+                feedback.user_corrected_category,
+                feedback.user_corrected_size.value
+                if feedback.user_corrected_size
+                else None,
+                feedback.user_corrected_priority.value
+                if feedback.user_corrected_priority
+                else None,
+                task_keywords_json,
+                feedback.correction_type,
             ],
         )
 
         result = cursor.fetchone()
         return self._row_to_model(_row_to_dict(result, cursor))
+
+    def create(self, feedback: AILearningFeedback) -> AILearningFeedback:
+        """Create method for test compatibility."""
+        return self.save_feedback(feedback)
+
+    def get_by_keyword(self, keyword: str, limit: int = 10) -> list[AILearningFeedback]:
+        """Get feedback records that contain the given keyword in task_keywords."""
+        conn = self.db.connect()
+        query = (
+            f"SELECT * FROM {self._get_table_name()} WHERE task_keywords LIKE ? LIMIT ?"
+        )
+        cursor = conn.execute(query, [f"%{keyword}%", limit])
+        results = cursor.fetchall()
+        return [self._row_to_model(_row_to_dict(row, cursor)) for row in results]
 
     def get_feedback_by_todo_id(self, todo_id: int) -> list[AILearningFeedback]:
         """Get all feedback for a specific todo."""
@@ -875,7 +1009,3 @@ class AILearningFeedbackRepository(BaseRepository[AILearningFeedback]):
         )
         results = cursor.fetchall()
         return [self._row_to_model(_row_to_dict(row, cursor)) for row in results]
-
-    def create(self, feedback: AILearningFeedback) -> AILearningFeedback:
-        """Create method for test compatibility."""
-        return self.save_feedback(feedback)
