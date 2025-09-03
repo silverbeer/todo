@@ -180,13 +180,17 @@ class TestCLICommands:
         mock_todo = Mock()
         mock_todo.id = 1
         mock_todo.title = "Test task"
+        mock_todo.category_id = None
+        mock_todo.category = None
+        mock_todo.status = Mock()
+        mock_todo.status.value = "pending"
         mock_todo.final_priority = Mock()
         mock_todo.final_priority.value = "medium"
         mock_todo.final_size = Mock()
         mock_todo.final_size.value = "medium"
 
         mock_todo_repo.get_active_todos.return_value = [mock_todo]
-        mock_ai_repo.get_by_todo_id.return_value = None
+        mock_ai_repo.get_latest_by_todo_id.return_value = None
 
         result = runner.invoke(app, ["list"])
 
@@ -208,6 +212,8 @@ class TestCLICommands:
         mock_todo = Mock()
         mock_todo.title = "Test task"
         mock_todo.total_points_earned = 5
+        # Mock scoring_result to None so it uses the fallback
+        mock_todo.scoring_result = None
         mock_todo_repo.complete_todo.return_value = mock_todo
 
         result = runner.invoke(app, ["done", "1"])

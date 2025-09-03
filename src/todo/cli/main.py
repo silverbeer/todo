@@ -317,6 +317,16 @@ def complete_todo(todo_id: int) -> None:
                 if scoring["daily_goal_met"]:
                     console.print("[green]🎯 Daily goal achieved![/green]")
 
+                # Achievement unlocks
+                if scoring.get("achievements_unlocked"):
+                    for achievement in scoring["achievements_unlocked"]:
+                        console.print(
+                            f"[bold magenta]🏆 Achievement Unlocked: {achievement.icon} {achievement.name}![/bold magenta]"
+                        )
+                        console.print(
+                            f"[dim]{achievement.description} (+{achievement.bonus_points} bonus points)[/dim]"
+                        )
+
             elif todo.total_points_earned:
                 # Fallback for basic points display
                 console.print(
@@ -486,6 +496,29 @@ def show_stats() -> None:
         )
         stats_table.add_row("Goal Status", goal_status)
 
+        # Add achievement summary to stats
+        from ..core.achievements import AchievementService
+
+        achievement_service = AchievementService(db)
+        user_stats = scoring_service.user_stats_repo.get_current_stats()
+        if user_stats:
+            achievement_summary = achievement_service.get_achievements_summary(
+                user_stats
+            )
+
+            stats_table.add_row("", "")  # Spacer
+            stats_table.add_row(
+                "Achievements",
+                f"🏆 {achievement_summary['total_unlocked']}/{achievement_summary['total_possible']} ({achievement_summary['completion_percentage']}%)",
+            )
+
+            if achievement_summary["next_milestone"]:
+                milestone = achievement_summary["next_milestone"]
+                stats_table.add_row(
+                    "Next Milestone",
+                    f"{milestone['icon']} {milestone['name']} ({milestone['percentage']:.1f}%)",
+                )
+
         console.print(stats_table)
 
         # Progress bar for level
@@ -535,6 +568,127 @@ def show_stats() -> None:
 
     except Exception as e:
         console.print(f"[red]✗ Error retrieving stats: {e}[/red]")
+
+
+@app.command("achievements")
+def show_achievements(
+    unlocked: bool = typer.Option(
+        False, "--unlocked", "-u", help="Show only unlocked achievements"
+    ),
+    progress: bool = typer.Option(
+        False, "--progress", "-p", help="Show progress toward locked achievements"
+    ),
+) -> None:
+    """Show achievements and progress."""
+    from rich.progress import BarColumn, Progress, TextColumn
+    from rich.table import Table
+
+    from ..core.achievements import AchievementService
+    from ..core.scoring import ScoringService
+
+    try:
+        achievement_service = AchievementService(db)
+        scoring_service = ScoringService(db)
+
+        # Get current user stats
+        user_stats = scoring_service.user_stats_repo.get_current_stats()
+        if not user_stats:
+            user_stats = scoring_service._initialize_user_stats()
+
+        # Get achievement progress and summary
+        achievement_progress = achievement_service.get_achievement_progress(user_stats)
+        summary = achievement_service.get_achievements_summary(user_stats)
+
+        # Show summary
+        console.print("\n[bold cyan]🏆 Achievement Progress[/bold cyan]")
+        console.print(
+            f"[green]{summary['total_unlocked']}[/green] of [cyan]{summary['total_possible']}[/cyan] unlocked ([yellow]{summary['completion_percentage']}%[/yellow])"
+        )
+
+        if summary["recent_unlocks"] > 0:
+            console.print(f"[dim]{summary['recent_unlocks']} unlocked recently[/dim]")
+
+        # Show next milestone
+        if summary["next_milestone"]:
+            milestone = summary["next_milestone"]
+            console.print(
+                f"[dim]Next milestone: {milestone['icon']} {milestone['name']} ({milestone['percentage']:.1f}%)[/dim]"
+            )
+
+        console.print()
+
+        # Filter achievements based on options
+        if unlocked:
+            filtered_achievements = {
+                name: data
+                for name, data in achievement_progress.items()
+                if data["unlocked"]
+            }
+            table_title = "🏆 Unlocked Achievements"
+        elif progress:
+            filtered_achievements = {
+                name: data
+                for name, data in achievement_progress.items()
+                if not data["unlocked"] and data["current"] > 0
+            }
+            table_title = "📊 Achievement Progress"
+        else:
+            filtered_achievements = achievement_progress
+            table_title = "🏆 All Achievements"
+
+        # Create achievements table
+        table = Table(title=table_title, show_header=True, header_style="bold blue")
+        table.add_column("Achievement", style="white", width=25)
+        table.add_column("Description", style="dim", width=40)
+        table.add_column("Progress", style="cyan", width=15)
+        table.add_column("Reward", style="yellow", width=10)
+
+        # Sort achievements by completion status and progress
+        sorted_achievements = sorted(
+            filtered_achievements.items(),
+            key=lambda x: (not x[1]["unlocked"], -x[1]["percentage"], x[0]),
+        )
+
+        for name, data in sorted_achievements:
+            # Status indicator
+            if data["unlocked"]:
+                status = f"[green]✅ {data['icon']} {name}[/green]"
+                progress_text = "[green]UNLOCKED[/green]"
+            else:
+                status = f"[dim]{data['icon']} {name}[/dim]"
+                if data["current"] == 0:
+                    progress_text = f"[dim]0/{data['required']}[/dim]"
+                else:
+                    progress_text = f"[cyan]{data['current']}[/cyan]/[white]{data['required']}[/white] ([yellow]{data['percentage']:.1f}%[/yellow])"
+
+            # Bonus points
+            bonus_text = (
+                f"+{data['bonus_points']} pts" if data["bonus_points"] > 0 else "-"
+            )
+
+            table.add_row(status, data["description"], progress_text, bonus_text)
+
+        console.print(table)
+
+        # Show progress bars for achievements in progress (if --progress flag)
+        if progress and filtered_achievements:
+            console.print("\n[bold]Progress Details:[/bold]")
+
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(bar_width=20),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                console=console,
+            ) as progress_bar:
+                for name, data in sorted_achievements[:5]:  # Show top 5 in progress
+                    if not data["unlocked"] and data["current"] > 0:
+                        task = progress_bar.add_task(
+                            f"{data['icon']} {name}", total=100
+                        )
+                        progress_bar.update(task, completed=data["percentage"])
+
+    except Exception as e:
+        console.print(f"[red]✗ Error retrieving achievements: {e}[/red]")
 
 
 @app.command("db")

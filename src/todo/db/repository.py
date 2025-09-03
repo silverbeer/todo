@@ -412,7 +412,11 @@ class TodoRepository(BaseRepository[Todo]):
         values = []
         for field, value in updates.items():
             set_clauses.append(f"{field} = ?")
-            values.append(value)
+            # Convert enum values to their string representation
+            if hasattr(value, "value"):
+                values.append(value.value)
+            else:
+                values.append(value)
 
         if not set_clauses:
             return self.get_by_id(todo_id)
@@ -426,11 +430,9 @@ class TodoRepository(BaseRepository[Todo]):
         """
 
         try:
-            result = conn.execute(query, values)
-
-            if result.rowcount > 0:
-                return self.get_by_id(todo_id)
-            return None
+            conn.execute(query, values)
+            # Always return the updated todo since DuckDB rowcount may not be reliable
+            return self.get_by_id(todo_id)
 
         except Exception as e:
             raise Exception(f"Error updating todo {todo_id}: {str(e)}") from e

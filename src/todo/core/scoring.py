@@ -192,6 +192,18 @@ class ScoringService:
         # Update daily activity
         self._update_daily_activity(completion_date, total_points)
 
+        # Check for newly unlocked achievements
+        # Import here to avoid circular imports
+        from .achievements import AchievementService
+
+        achievement_service = AchievementService(self.db)
+
+        # Get updated user stats after points were awarded
+        updated_stats = self.user_stats_repo.get_current_stats()
+        newly_unlocked_achievements = achievement_service.check_and_unlock_achievements(
+            updated_stats
+        )
+
         return {
             "base_points": base_points,
             "bonus_points": bonus_points,
@@ -200,6 +212,7 @@ class ScoringService:
             "level_up": level_up,
             "new_level": current_level,
             "daily_goal_met": self._check_daily_goal_met(completion_date),
+            "achievements_unlocked": newly_unlocked_achievements,
         }
 
     def update_streak(self, completion_date: date = None) -> int:
