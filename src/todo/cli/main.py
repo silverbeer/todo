@@ -812,8 +812,16 @@ def goal_main(
         # Show current goals if any exist
         try:
             from ..core.goals import GoalService
+            from ..db.repository import UserStatsRepository
 
             goal_service = GoalService(db)
+
+            # Update goal progress before displaying
+            user_stats_repo = UserStatsRepository(db)
+            user_stats = user_stats_repo.get_current_stats()
+            if user_stats:
+                goal_service.update_goal_progress(user_stats)
+
             goals = goal_service.get_current_goals()
 
             if goals:
@@ -904,9 +912,17 @@ def create_goal(
 def list_goals() -> None:
     """List all current goals."""
     from ..core.goals import GoalService
+    from ..db.repository import UserStatsRepository
 
     try:
         goal_service = GoalService(db)
+
+        # Update goal progress before displaying
+        user_stats_repo = UserStatsRepository(db)
+        user_stats = user_stats_repo.get_current_stats()
+        if user_stats:
+            goal_service.update_goal_progress(user_stats)
+
         goals = goal_service.get_current_goals()
 
         if not goals:
