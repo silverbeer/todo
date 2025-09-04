@@ -5,7 +5,12 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..db.connection import DatabaseConnection
-from ..db.repository import DailyActivityRepository, TodoRepository, UserStatsRepository
+from ..db.repository import (
+    AIEnrichmentRepository,
+    DailyActivityRepository,
+    TodoRepository,
+    UserStatsRepository,
+)
 from ..models import DailyActivity, Todo
 
 
@@ -18,6 +23,7 @@ class AnalyticsService:
         self.todo_repo = TodoRepository(db_connection)
         self.user_stats_repo = UserStatsRepository(db_connection)
         self.daily_activity_repo = DailyActivityRepository(db_connection)
+        self.ai_enrichment_repo = AIEnrichmentRepository(db_connection)
 
     def generate_productivity_report(self, days: int = 30) -> dict[str, Any]:
         """Generate comprehensive productivity report."""
@@ -258,7 +264,16 @@ class AnalyticsService:
             total_tasks = len(todos)
 
             for todo in todos:
-                category = todo.category or "Uncategorized"
+                # First try to use the category object
+                if todo.category:
+                    category = todo.category.name
+                else:
+                    # Fall back to AI suggested category if available
+                    enrichment = self._get_todo_enrichment(todo.id)
+                    if enrichment and enrichment.suggested_category:
+                        category = enrichment.suggested_category
+                    else:
+                        category = "Uncategorized"
                 category_counts[category] = category_counts.get(category, 0) + 1
 
             breakdown = []
@@ -271,6 +286,13 @@ class AnalyticsService:
             return sorted(breakdown, key=lambda x: x["count"], reverse=True)
         except Exception:
             return []
+
+    def _get_todo_enrichment(self, todo_id: int):
+        """Get AI enrichment data for a todo."""
+        try:
+            return self.ai_enrichment_repo.get_by_todo_id(todo_id)
+        except Exception:
+            return None
 
     def _generate_insights(self, user_stats: Any, days: int = 30) -> list[str]:  # noqa: ARG002
         """Generate insights based on user performance."""
