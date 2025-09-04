@@ -290,7 +290,7 @@ class AnalyticsService:
     def _get_todo_enrichment(self, todo_id: int):
         """Get AI enrichment data for a todo."""
         try:
-            return self.ai_enrichment_repo.get_by_todo_id(todo_id)
+            return self.ai_enrichment_repo.get_latest_by_todo_id(todo_id)
         except Exception:
             return None
 
