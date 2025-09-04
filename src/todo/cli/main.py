@@ -792,6 +792,63 @@ def show_dashboard(
 goal_app = typer.Typer(help="Goal management commands")
 
 
+@goal_app.callback(invoke_without_command=True)
+def goal_main(
+    ctx: typer.Context,
+) -> None:
+    """Goal management - create, list, and track your productivity goals."""
+    if ctx.invoked_subcommand is None:
+        # Show helpful information when no subcommand is provided
+        console.print("[bold cyan]🎯 Goal Management[/bold cyan]")
+        console.print("\n[dim]Available commands:[/dim]")
+        console.print("  [cyan]create[/cyan]  Create a new weekly or monthly goal")
+        console.print("  [cyan]list[/cyan]    Show all current goals")
+        console.print("  [cyan]delete[/cyan]  Delete a goal by ID")
+        console.print("\n[dim]Examples:[/dim]")
+        console.print("  [green]todo goal create weekly tasks_completed 10[/green]")
+        console.print("  [green]todo goal list[/green]")
+        console.print("  [green]todo goal delete 1[/green]")
+
+        # Show current goals if any exist
+        try:
+            from ..core.goals import GoalService
+
+            goal_service = GoalService(db)
+            goals = goal_service.get_current_goals()
+
+            if goals:
+                console.print("\n[bold cyan]📋 Current Goals[/bold cyan]")
+                from rich.table import Table
+
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("Goal", style="white", width=20)
+                table.add_column("Progress", style="cyan", width=25)
+                table.add_column("Status", style="yellow", width=12)
+                table.add_column("Days Left", style="magenta", width=10)
+
+                for goal in goals:
+                    progress_bar = "█" * min(10, int(goal.progress_percentage / 10))
+                    progress_bar += "░" * (10 - len(progress_bar))
+
+                    status = "✅ Done" if goal.is_completed else "🎯 Active"
+
+                    table.add_row(
+                        f"{goal.type.value.title()} {goal.category.value.replace('_', ' ').title()}",
+                        f"{progress_bar} {goal.current_value}/{goal.target_value} ({goal.progress_percentage:.0f}%)",
+                        status,
+                        str(goal.days_remaining),
+                    )
+
+                console.print(table)
+            else:
+                console.print("\n[dim]No active goals. Create one with:[/dim]")
+                console.print(
+                    "  [green]todo goal create weekly tasks_completed 10[/green]"
+                )
+        except Exception as e:
+            console.print(f"[red]✗ Error loading goals: {e}[/red]")
+
+
 @goal_app.command("create")
 def create_goal(
     goal_type: str = typer.Argument(..., help="Goal type: weekly or monthly"),
