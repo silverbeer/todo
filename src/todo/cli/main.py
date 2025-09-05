@@ -570,6 +570,419 @@ def show_stats() -> None:
         console.print(f"[red]✗ Error retrieving stats: {e}[/red]")
 
 
+@app.command("dashboard")
+def show_dashboard(
+    days: int = typer.Option(30, "--days", "-d", help="Number of days to analyze"),
+) -> None:
+    """Show productivity dashboard with insights and analytics."""
+    from rich.columns import Columns
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from ..core.analytics import AnalyticsService
+    from ..core.goals import GoalService
+    from ..core.scoring import ScoringService
+
+    try:
+        analytics_service = AnalyticsService(db)
+        goal_service = GoalService(db)
+        scoring_service = ScoringService(db)
+
+        # Get current user stats
+        user_stats = scoring_service.user_stats_repo.get_current_stats()
+        if not user_stats:
+            user_stats = scoring_service._initialize_user_stats()
+
+        # Update goal progress
+        goal_service.update_goal_progress(user_stats)
+
+        console.print(
+            f"\n[bold cyan]📊 Productivity Dashboard[/bold cyan] [dim]({days} days)[/dim]\n"
+        )
+
+        # Generate productivity report
+        report = analytics_service.generate_productivity_report(days)
+
+        # --- Left Column: Overview Stats ---
+        overview_table = Table(show_header=False, box=None)
+        overview_table.add_column("Metric", style="cyan")
+        overview_table.add_column("Value", style="bold white")
+
+        overview_table.add_row("📝 Tasks Completed", str(report["total_completed"]))
+        overview_table.add_row(
+            "📈 Completion Rate", f"{report['completion_rate']:.1f}%"
+        )
+        overview_table.add_row("🔥 Current Streak", f"{report['current_streak']} days")
+        overview_table.add_row("⭐ Total Points", str(report["total_points"]))
+
+        # Trend indicator
+        trend_icon = (
+            "📈"
+            if report["trend"]["direction"] == "improving"
+            else "📉"
+            if report["trend"]["direction"] == "declining"
+            else "➡️"
+        )
+        overview_table.add_row(
+            "📊 Trend", f"{trend_icon} {report['trend']['direction']}"
+        )
+
+        overview_panel = Panel(overview_table, title="📋 Overview", border_style="blue")
+
+        # --- Right Column: Goals Progress ---
+        goals_summary = goal_service.get_goals_summary()
+
+        if goals_summary["total_goals"] > 0:
+            goals_table = Table(show_header=True, header_style="bold green")
+            goals_table.add_column("Goal", style="white", width=15)
+            goals_table.add_column("Progress", style="cyan", width=20)
+            goals_table.add_column("Days Left", style="yellow", width=8)
+
+            for goal_data in goals_summary["goals"]:
+                # Progress bar representation
+                progress_bar = "█" * int(goal_data["progress"] / 10) + "░" * (
+                    10 - int(goal_data["progress"] / 10)
+                )
+                progress_text = f"{progress_bar} {goal_data['progress']:.0f}%"
+
+                # Status icon
+                status_icon = "✅" if goal_data["completed"] else "🎯"
+                goal_name = (
+                    f"{status_icon} {goal_data['category'].replace('_', ' ').title()}"
+                )
+
+                goals_table.add_row(
+                    goal_name, progress_text, str(goal_data["days_remaining"])
+                )
+
+            goals_panel = Panel(
+                goals_table,
+                title=f"🎯 Goals ({goals_summary['completed_goals']}/{goals_summary['total_goals']})",
+                border_style="green",
+            )
+        else:
+            goals_panel = Panel(
+                "[dim]No active goals set.\nUse 'todo goal create' to set goals![/dim]",
+                title="🎯 Goals",
+                border_style="green",
+            )
+
+        # Display overview and goals side by side
+        console.print(Columns([overview_panel, goals_panel], equal=True))
+
+        # --- Category Breakdown ---
+        if report["category_breakdown"]:
+            console.print("\n[bold cyan]📂 Category Breakdown[/bold cyan]")
+
+            category_table = Table(show_header=True, header_style="bold magenta")
+            category_table.add_column("Category", style="white", width=15)
+            category_table.add_column("Tasks", style="cyan", width=8)
+            category_table.add_column("Percentage", style="yellow", width=12)
+            category_table.add_column("Distribution", style="magenta", width=20)
+
+            for category_data in report["category_breakdown"]:
+                # Visual bar for percentage
+                bar_length = int(
+                    category_data["percentage"] / 5
+                )  # Scale to 20 chars max
+                bar = "█" * bar_length + "░" * (20 - bar_length)
+
+                category_table.add_row(
+                    category_data["category"] or "Uncategorized",
+                    str(category_data["count"]),
+                    f"{category_data['percentage']:.1f}%",
+                    bar,
+                )
+
+            console.print(category_table)
+
+        # --- Weekly Summary ---
+        weekly_summary = analytics_service.get_weekly_summary()
+        console.print("\n[bold cyan]📅 This Week[/bold cyan]")
+
+        weekly_table = Table(show_header=True, header_style="bold blue")
+        weekly_table.add_column("Metric", style="white", width=20)
+        weekly_table.add_column("This Week", style="bold cyan", width=12)
+        weekly_table.add_column("Last Week", style="dim", width=12)
+        weekly_table.add_column("Change", style="yellow", width=10)
+
+        # Calculate changes
+        def format_change(current, previous):
+            if previous == 0:
+                return "N/A" if current == 0 else "NEW"
+            change = ((current - previous) / previous) * 100
+            if change > 0:
+                return f"+{change:.1f}%"
+            elif change < 0:
+                return f"{change:.1f}%"
+            else:
+                return "0%"
+
+        weekly_table.add_row(
+            "Tasks Completed",
+            str(weekly_summary["current_week"]["completed_tasks"]),
+            str(weekly_summary["previous_week"]["completed_tasks"]),
+            format_change(
+                weekly_summary["current_week"]["completed_tasks"],
+                weekly_summary["previous_week"]["completed_tasks"],
+            ),
+        )
+
+        weekly_table.add_row(
+            "Points Earned",
+            str(weekly_summary["current_week"]["points_earned"]),
+            str(weekly_summary["previous_week"]["points_earned"]),
+            format_change(
+                weekly_summary["current_week"]["points_earned"],
+                weekly_summary["previous_week"]["points_earned"],
+            ),
+        )
+
+        weekly_table.add_row(
+            "Active Days",
+            str(weekly_summary["current_week"]["active_days"]),
+            str(weekly_summary["previous_week"]["active_days"]),
+            format_change(
+                weekly_summary["current_week"]["active_days"],
+                weekly_summary["previous_week"]["active_days"],
+            ),
+        )
+
+        console.print(weekly_table)
+
+        # --- Insights ---
+        if report["insights"]:
+            console.print("\n[bold cyan]💡 Insights & Recommendations[/bold cyan]")
+
+            for _i, insight in enumerate(report["insights"], 1):
+                icon = (
+                    "🎯"
+                    if "goal" in insight.lower()
+                    else "💡"
+                    if "tip" in insight.lower()
+                    else "📈"
+                )
+                console.print(f"{icon} {insight}")
+
+        # --- Goal Suggestions ---
+        suggestions = goal_service.get_goal_suggestions(user_stats)
+        if suggestions:
+            console.print("\n[bold cyan]🎯 Suggested Goals[/bold cyan]")
+
+            for i, suggestion in enumerate(suggestions, 1):
+                difficulty_color = {
+                    "easy": "green",
+                    "moderate": "yellow",
+                    "challenging": "red",
+                }.get(suggestion["difficulty"], "white")
+
+                console.print(
+                    f"{i}. [{difficulty_color}]{suggestion['type'].value.title()}[/{difficulty_color}]: "
+                    f"{suggestion['category'].value.replace('_', ' ').title()} - "
+                    f"[bold]{suggestion['target_value']}[/bold]"
+                )
+                console.print(f"   [dim]{suggestion['reason']}[/dim]")
+
+        console.print()
+
+    except Exception as e:
+        console.print(f"[red]✗ Error generating dashboard: {e}[/red]")
+
+
+goal_app = typer.Typer(help="Goal management commands")
+
+
+@goal_app.callback(invoke_without_command=True)
+def goal_main(
+    ctx: typer.Context,
+) -> None:
+    """Goal management - create, list, and track your productivity goals."""
+    if ctx.invoked_subcommand is None:
+        # Show helpful information when no subcommand is provided
+        console.print("[bold cyan]🎯 Goal Management[/bold cyan]")
+        console.print("\n[dim]Available commands:[/dim]")
+        console.print("  [cyan]create[/cyan]  Create a new weekly or monthly goal")
+        console.print("  [cyan]list[/cyan]    Show all current goals")
+        console.print("  [cyan]delete[/cyan]  Delete a goal by ID")
+        console.print("\n[dim]Examples:[/dim]")
+        console.print("  [green]todo goal create weekly tasks_completed 10[/green]")
+        console.print("  [green]todo goal list[/green]")
+        console.print("  [green]todo goal delete 1[/green]")
+
+        # Show current goals if any exist
+        try:
+            from ..core.goals import GoalService
+            from ..db.repository import UserStatsRepository
+
+            goal_service = GoalService(db)
+
+            # Update goal progress before displaying
+            user_stats_repo = UserStatsRepository(db)
+            user_stats = user_stats_repo.get_current_stats()
+            if user_stats:
+                goal_service.update_goal_progress(user_stats)
+
+            goals = goal_service.get_current_goals()
+
+            if goals:
+                console.print("\n[bold cyan]📋 Current Goals[/bold cyan]")
+                from rich.table import Table
+
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("Goal", style="white", width=20)
+                table.add_column("Progress", style="cyan", width=25)
+                table.add_column("Status", style="yellow", width=12)
+                table.add_column("Days Left", style="magenta", width=10)
+
+                for goal in goals:
+                    progress_bar = "█" * min(10, int(goal.progress_percentage / 10))
+                    progress_bar += "░" * (10 - len(progress_bar))
+
+                    status = "✅ Done" if goal.is_completed else "🎯 Active"
+
+                    table.add_row(
+                        f"{goal.type.value.title()} {goal.category.value.replace('_', ' ').title()}",
+                        f"{progress_bar} {goal.current_value}/{goal.target_value} ({goal.progress_percentage:.0f}%)",
+                        status,
+                        str(goal.days_remaining),
+                    )
+
+                console.print(table)
+            else:
+                console.print("\n[dim]No active goals. Create one with:[/dim]")
+                console.print(
+                    "  [green]todo goal create weekly tasks_completed 10[/green]"
+                )
+        except Exception as e:
+            console.print(f"[red]✗ Error loading goals: {e}[/red]")
+
+
+@goal_app.command("create")
+def create_goal(
+    goal_type: str = typer.Argument(..., help="Goal type: weekly or monthly"),
+    category: str = typer.Argument(
+        ...,
+        help="Category: tasks_completed, points_earned, streak_days, productivity_score",
+    ),
+    target: int = typer.Argument(..., help="Target value to achieve"),
+) -> None:
+    """Create a new goal."""
+    from ..core.goals import GoalCategory, GoalService, GoalType
+
+    try:
+        goal_service = GoalService(db)
+
+        # Validate inputs
+        try:
+            goal_type_enum = GoalType(goal_type.lower())
+        except ValueError:
+            console.print(
+                f"[red]✗ Invalid goal type: {goal_type}. Use 'weekly' or 'monthly'[/red]"
+            )
+            return
+
+        try:
+            category_enum = GoalCategory(category.lower())
+        except ValueError:
+            console.print(
+                f"[red]✗ Invalid category: {category}. Use 'tasks_completed', 'points_earned', 'streak_days', or 'productivity_score'[/red]"
+            )
+            return
+
+        if target <= 0:
+            console.print("[red]✗ Target must be a positive number[/red]")
+            return
+
+        # Create the goal
+        goal = goal_service.create_goal(goal_type_enum, category_enum, target)
+
+        console.print(
+            f"[green]✅ Created {goal_type} goal:[/green] "
+            f"{category.replace('_', ' ').title()} - {target}"
+        )
+        console.print(
+            f"[dim]Period: {goal.period_start} to {goal.period_end} ({goal.days_remaining} days remaining)[/dim]"
+        )
+
+    except Exception as e:
+        console.print(f"[red]✗ Error creating goal: {e}[/red]")
+
+
+@goal_app.command("list")
+def list_goals() -> None:
+    """List all current goals."""
+    from ..core.goals import GoalService
+    from ..db.repository import UserStatsRepository
+
+    try:
+        goal_service = GoalService(db)
+
+        # Update goal progress before displaying
+        user_stats_repo = UserStatsRepository(db)
+        user_stats = user_stats_repo.get_current_stats()
+        if user_stats:
+            goal_service.update_goal_progress(user_stats)
+
+        goals = goal_service.get_current_goals()
+
+        if not goals:
+            console.print(
+                "[yellow]No active goals found. Create one with 'todo goal create'![/yellow]"
+            )
+            return
+
+        console.print("\n[bold cyan]🎯 Current Goals[/bold cyan]\n")
+
+        goals_table = Table(show_header=True, header_style="bold green")
+        goals_table.add_column("Goal", style="white", width=20)
+        goals_table.add_column("Progress", style="cyan", width=25)
+        goals_table.add_column("Status", style="yellow", width=10)
+        goals_table.add_column("Days Left", style="magenta", width=10)
+
+        for goal in goals:
+            # Goal name
+            goal_name = f"{goal.type.value.title()} {goal.category.value.replace('_', ' ').title()}"
+
+            # Progress bar and text
+            progress_bar = "█" * int(goal.progress_percentage / 10) + "░" * (
+                10 - int(goal.progress_percentage / 10)
+            )
+            progress_text = f"{progress_bar} {goal.current_value}/{goal.target_value} ({goal.progress_percentage:.0f}%)"
+
+            # Status
+            status = "✅ Done" if goal.is_completed else "🎯 Active"
+
+            goals_table.add_row(
+                goal_name, progress_text, status, str(goal.days_remaining)
+            )
+
+        console.print(goals_table)
+        console.print()
+
+    except Exception as e:
+        console.print(f"[red]✗ Error listing goals: {e}[/red]")
+
+
+@goal_app.command("delete")
+def delete_goal(goal_id: int = typer.Argument(..., help="Goal ID to delete")) -> None:
+    """Delete a goal by ID."""
+    from ..core.goals import GoalService
+
+    try:
+        goal_service = GoalService(db)
+
+        if goal_service.delete_goal(goal_id):
+            console.print(f"[green]✅ Deleted goal {goal_id}[/green]")
+        else:
+            console.print(f"[red]✗ Goal {goal_id} not found[/red]")
+
+    except Exception as e:
+        console.print(f"[red]✗ Error deleting goal: {e}[/red]")
+
+
+app.add_typer(goal_app, name="goal")
+
+
 @app.command("achievements")
 def show_achievements(
     unlocked: bool = typer.Option(

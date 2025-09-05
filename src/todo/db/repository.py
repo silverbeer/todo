@@ -525,6 +525,69 @@ class TodoRepository(BaseRepository[Todo]):
         column_names = [desc[0] for desc in cursor.description]
         return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
+    def get_completed_todos_for_period(
+        self, start_date: date, end_date: date
+    ) -> list[Todo]:
+        """Get completed todos for a specific date period.
+
+        Args:
+            start_date: Start of the period (inclusive).
+            end_date: End of the period (inclusive).
+
+        Returns:
+            List of completed todos in the period.
+        """
+        conn = self.db.connect()
+
+        query = """
+        SELECT *
+        FROM todos
+        WHERE status = 'completed'
+        AND DATE(completed_at) >= DATE(?)
+        AND DATE(completed_at) <= DATE(?)
+        ORDER BY completed_at DESC
+        """
+
+        cursor = conn.execute(query, [start_date, end_date])
+        results = cursor.fetchall()
+
+        if not results:
+            return []
+
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
+
+    def get_todos_created_for_period(
+        self, start_date: date, end_date: date
+    ) -> list[Todo]:
+        """Get todos created for a specific date period.
+
+        Args:
+            start_date: Start of the period (inclusive).
+            end_date: End of the period (inclusive).
+
+        Returns:
+            List of todos created in the period.
+        """
+        conn = self.db.connect()
+
+        query = """
+        SELECT *
+        FROM todos
+        WHERE DATE(created_at) >= DATE(?)
+        AND DATE(created_at) <= DATE(?)
+        ORDER BY created_at DESC
+        """
+
+        cursor = conn.execute(query, [start_date, end_date])
+        results = cursor.fetchall()
+
+        if not results:
+            return []
+
+        column_names = [desc[0] for desc in cursor.description]
+        return [self._row_to_model(dict(zip(column_names, row))) for row in results]
+
 
 class UserStatsRepository(BaseRepository[UserStats]):
     """Repository for UserStats operations."""
