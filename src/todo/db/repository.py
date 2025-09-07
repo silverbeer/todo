@@ -425,7 +425,7 @@ class TodoRepository(BaseRepository[Todo]):
 
         query = f"""
             UPDATE todos
-            SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
+            SET {", ".join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """
 
@@ -748,7 +748,7 @@ class DailyActivityRepository(BaseRepository[DailyActivity]):
 
         query = f"""
             UPDATE daily_activity
-            SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
+            SET {", ".join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
             WHERE activity_date = ?
         """
 

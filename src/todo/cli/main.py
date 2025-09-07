@@ -23,20 +23,41 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-# Initialize services
-config = get_app_config()
-db = DatabaseConnection(config.database.database_path)
+# Initialize services with error handling
+try:
+    config = get_app_config()
+    db = DatabaseConnection(config.database.database_path)
 
-# Initialize database schema if needed
-migration_manager = MigrationManager(db)
-if not migration_manager.is_schema_initialized():
-    console.print("[yellow]⚠ Database not initialized. Initializing...[/yellow]")
-    migration_manager.run_migrations()
+    # Initialize database schema if needed
+    migration_manager = MigrationManager(db)
+    if not migration_manager.is_schema_initialized():
+        console.print("[yellow]⚠ Database not initialized. Initializing...[/yellow]")
+        migration_manager.run_migrations()
 
-todo_repo = TodoRepository(db)
-ai_repo = AIEnrichmentRepository(db)
-enrichment_service = EnrichmentService(db)
-background_service = BackgroundEnrichmentService(db)
+    todo_repo = TodoRepository(db)
+    ai_repo = AIEnrichmentRepository(db)
+    enrichment_service = EnrichmentService(db)
+    background_service = BackgroundEnrichmentService(db)
+except RuntimeError as e:
+    # Handle database lock errors gracefully
+    console.print(f"[red]✗ Database Error:[/red] {e}")
+    console.print("\n[yellow]💡 Troubleshooting tips:[/yellow]")
+    console.print(
+        "• Check if another todo instance is running: [dim]ps aux | grep todo[/dim]"
+    )
+    console.print("• Kill any hanging processes: [dim]pkill -f todo[/dim]")
+    console.print("• If the issue persists, restart your terminal or reboot")
+    import sys
+
+    sys.exit(1)
+except Exception as e:
+    console.print(f"[red]✗ Unexpected error initializing database:[/red] {e}")
+    console.print(
+        "[yellow]💡 Please check your database configuration and try again.[/yellow]"
+    )
+    import sys
+
+    sys.exit(1)
 
 
 @app.command("version")

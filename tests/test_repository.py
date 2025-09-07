@@ -131,7 +131,7 @@ class TestTodoRepository:
         """Test getting active todos with a limit."""
         # Create multiple todos
         for i in range(5):
-            todo_repo.create_todo(f"Task {i+1}")
+            todo_repo.create_todo(f"Task {i + 1}")
 
         todos = todo_repo.get_active_todos(limit=3)
 
