@@ -23,41 +23,66 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-# Initialize services with error handling
-try:
-    config = get_app_config()
-    db = DatabaseConnection(config.database.database_path)
+# Global variables - initialized lazily
+config = None
+db = None
+migration_manager = None
+todo_repo = None
+ai_repo = None
+enrichment_service = None
+background_service = None
 
-    # Initialize database schema if needed
-    migration_manager = MigrationManager(db)
-    if not migration_manager.is_schema_initialized():
-        console.print("[yellow]⚠ Database not initialized. Initializing...[/yellow]")
-        migration_manager.run_migrations()
 
-    todo_repo = TodoRepository(db)
-    ai_repo = AIEnrichmentRepository(db)
-    enrichment_service = EnrichmentService(db)
-    background_service = BackgroundEnrichmentService(db)
-except RuntimeError as e:
-    # Handle database lock errors gracefully
-    console.print(f"[red]✗ Database Error:[/red] {e}")
-    console.print("\n[yellow]💡 Troubleshooting tips:[/yellow]")
-    console.print(
-        "• Check if another todo instance is running: [dim]ps aux | grep todo[/dim]"
-    )
-    console.print("• Kill any hanging processes: [dim]pkill -f todo[/dim]")
-    console.print("• If the issue persists, restart your terminal or reboot")
-    import sys
+def _initialize_services():
+    """Initialize services lazily - only when actually needed."""
+    global \
+        config, \
+        db, \
+        migration_manager, \
+        todo_repo, \
+        ai_repo, \
+        enrichment_service, \
+        background_service
 
-    sys.exit(1)
-except Exception as e:
-    console.print(f"[red]✗ Unexpected error initializing database:[/red] {e}")
-    console.print(
-        "[yellow]💡 Please check your database configuration and try again.[/yellow]"
-    )
-    import sys
+    if db is not None:
+        return  # Already initialized
 
-    sys.exit(1)
+    try:
+        config = get_app_config()
+        db = DatabaseConnection(config.database.database_path)
+
+        # Initialize database schema if needed
+        migration_manager = MigrationManager(db)
+        if not migration_manager.is_schema_initialized():
+            console.print(
+                "[yellow]⚠ Database not initialized. Initializing...[/yellow]"
+            )
+            migration_manager.run_migrations()
+
+        todo_repo = TodoRepository(db)
+        ai_repo = AIEnrichmentRepository(db)
+        enrichment_service = EnrichmentService(db)
+        background_service = BackgroundEnrichmentService(db)
+    except RuntimeError as e:
+        # Handle database lock errors gracefully
+        console.print(f"[red]✗ Database Error:[/red] {e}")
+        console.print("\n[yellow]💡 Troubleshooting tips:[/yellow]")
+        console.print(
+            "• Check if another todo instance is running: [dim]ps aux | grep todo[/dim]"
+        )
+        console.print("• Kill any hanging processes: [dim]pkill -f todo[/dim]")
+        console.print("• If the issue persists, restart your terminal or reboot")
+        import sys
+
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]✗ Unexpected error initializing database:[/red] {e}")
+        console.print(
+            "[yellow]💡 Please check your database configuration and try again.[/yellow]"
+        )
+        import sys
+
+        sys.exit(1)
 
 
 @app.command("version")
@@ -78,6 +103,7 @@ def add_todo(
     ),
 ) -> None:
     """Add a new todo task with optional AI enrichment."""
+    _initialize_services()
 
     # Validate input
     if not task or not task.strip():
@@ -217,6 +243,7 @@ def list_todos(
     ),
 ) -> None:
     """List active todos with AI enrichment status."""
+    _initialize_services()
 
     try:
         if all_todos:
@@ -301,6 +328,8 @@ def list_todos(
 @app.command("complete")
 def complete_todo(todo_id: int) -> None:
     """Mark a todo as completed."""
+    _initialize_services()
+
     try:
         todo = todo_repo.complete_todo(todo_id)
 
@@ -482,6 +511,8 @@ def enrich_todo(
 @app.command("stats")
 def show_stats() -> None:
     """Show user progress and statistics."""
+    _initialize_services()
+
     from ..core.scoring import ScoringService
 
     try:
@@ -1014,6 +1045,8 @@ def show_achievements(
     ),
 ) -> None:
     """Show achievements and progress."""
+    _initialize_services()
+
     from rich.progress import BarColumn, Progress, TextColumn
     from rich.table import Table
 
