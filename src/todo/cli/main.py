@@ -326,74 +326,131 @@ def list_todos(
 
 @app.command("done")
 @app.command("complete")
-def complete_todo(todo_id: int) -> None:
-    """Mark a todo as completed."""
+def complete_todo(
+    todo_ids: list[int] = typer.Argument(
+        ..., help="One or more todo IDs to mark as completed"
+    ),
+) -> None:
+    """Mark one or more todos as completed.
+
+    Examples:
+        todo done 42                    # Complete single todo
+        todo done 10 11 12             # Complete multiple todos
+        todo complete 5 7 9            # Same using 'complete' alias
+    """
     _initialize_services()
 
-    try:
-        todo = todo_repo.complete_todo(todo_id)
+    completed_count = 0
+    failed_count = 0
+    total_points = 0
+    all_achievements = []
 
-        if todo:
-            console.print(f"[green]✓ Completed:[/green] {todo.title}")
+    for todo_id in todo_ids:
+        try:
+            todo = todo_repo.complete_todo(todo_id)
 
-            # Display gamification results
-            if hasattr(todo, "scoring_result") and todo.scoring_result:
-                scoring = todo.scoring_result
+            if todo:
+                completed_count += 1
+                console.print(f"[green]✓ Completed:[/green] {todo.title}")
 
-                # Points breakdown
-                if scoring["bonus_points"] > 0:
-                    console.print(
-                        f"[yellow]🎉 Earned {scoring['total_points']} points! "
-                        f"({scoring['base_points']} base + {scoring['bonus_points']} bonus)[/yellow]"
-                    )
-                else:
-                    console.print(
-                        f"[yellow]🎉 Earned {scoring['total_points']} points![/yellow]"
-                    )
+                # Display gamification results
+                if hasattr(todo, "scoring_result") and todo.scoring_result:
+                    scoring = todo.scoring_result
+                    total_points += scoring["total_points"]
 
-                # Streak information
-                if scoring["new_streak"] > 1:
-                    console.print(
-                        f"[blue]🔥 {scoring['new_streak']}-day streak![/blue]"
-                    )
-
-                # Level up notification
-                if scoring["level_up"]:
-                    console.print(
-                        f"[magenta]⭐ Level up! You're now level {scoring['new_level']}![/magenta]"
-                    )
-
-                # Daily goal achievement
-                if scoring["daily_goal_met"]:
-                    console.print("[green]🎯 Daily goal achieved![/green]")
-
-                # Achievement unlocks
-                if scoring.get("achievements_unlocked"):
-                    for achievement in scoring["achievements_unlocked"]:
+                    # Points breakdown (show for each todo)
+                    if scoring["bonus_points"] > 0:
                         console.print(
-                            f"[bold magenta]🏆 Achievement Unlocked: {achievement.icon} {achievement.name}![/bold magenta]"
+                            f"[yellow]  🎉 Earned {scoring['total_points']} points! "
+                            f"({scoring['base_points']} base + {scoring['bonus_points']} bonus)[/yellow]"
                         )
+                    else:
                         console.print(
-                            f"[dim]{achievement.description} (+{achievement.bonus_points} bonus points)[/dim]"
+                            f"[yellow]  🎉 Earned {scoring['total_points']} points![/yellow]"
                         )
 
-            elif todo.total_points_earned:
-                # Fallback for basic points display
+                    # Collect achievements for summary at the end
+                    if scoring.get("achievements_unlocked"):
+                        all_achievements.extend(scoring["achievements_unlocked"])
+
+                elif todo.total_points_earned:
+                    # Fallback for basic points display
+                    total_points += todo.total_points_earned
+                    console.print(
+                        f"[yellow]  🎉 Earned {todo.total_points_earned} points![/yellow]"
+                    )
+            else:
+                failed_count += 1
                 console.print(
-                    f"[yellow]🎉 Earned {todo.total_points_earned} points![/yellow]"
+                    f"[red]✗ Todo {todo_id} not found or already completed[/red]"
                 )
-        else:
-            console.print(f"[red]✗ Todo {todo_id} not found or already completed[/red]")
-    except Exception as e:
-        error_msg = str(e)
-        if "foreign key constraint" in error_msg.lower():
+        except Exception as e:
+            failed_count += 1
+            error_msg = str(e)
+            if "foreign key constraint" in error_msg.lower():
+                console.print(
+                    f"[red]✗ Cannot complete todo {todo_id}: This todo has related data that must be cleaned up first[/red]"
+                )
+            elif "not found" in error_msg.lower():
+                console.print(f"[red]✗ Todo {todo_id} not found[/red]")
+            else:
+                console.print(
+                    f"[red]✗ Error completing todo {todo_id}: {error_msg}[/red]"
+                )
+
+    # Summary for multiple todos
+    if len(todo_ids) > 1:
+        console.print()
+        if completed_count > 0:
             console.print(
-                f"[red]✗ Cannot complete todo {todo_id}: This todo has related data that must be cleaned up first[/red]"
+                f"[green]📊 Summary: {completed_count} todos completed[/green]"
             )
-        elif "not found" in error_msg.lower():
-            console.print(f"[red]✗ Todo {todo_id} not found[/red]")
-        else:
-            console.print(f"[red]✗ Error completing todo {todo_id}: {error_msg}[/red]")
+            if total_points > 0:
+                console.print(
+                    f"[yellow]🎯 Total points earned: {total_points}[/yellow]"
+                )
+
+            # Show unique achievements unlocked
+            if all_achievements:
+                unique_achievements = {a.name: a for a in all_achievements}
+                console.print(
+                    f"[bold magenta]🏆 Achievements unlocked: {len(unique_achievements)}[/bold magenta]"
+                )
+                for achievement in unique_achievements.values():
+                    console.print(
+                        f"[bold magenta]  • {achievement.icon} {achievement.name}[/bold magenta]"
+                    )
+                    console.print(
+                        f"[dim]    {achievement.description} (+{achievement.bonus_points} bonus points)[/dim]"
+                    )
+
+        if failed_count > 0:
+            console.print(
+                f"[red]❌ Failed: {failed_count} todos could not be completed[/red]"
+            )
+
+    # Show streak and level info from the last completed todo (if any)
+    if completed_count > 0 and len(todo_ids) > 1:
+        # Get the latest scoring result to show streak/level info
+        try:
+            from ..core.scoring import ScoringService
+
+            scoring_service = ScoringService(db)
+            progress = scoring_service.get_user_progress()
+
+            if progress["current_streak"] > 1:
+                console.print(
+                    f"[blue]🔥 Current streak: {progress['current_streak']} days[/blue]"
+                )
+
+            # Check if we leveled up (simplified check)
+            if total_points > 0:  # Only show if we earned points
+                console.print(
+                    f"[cyan]⭐ Current level: {progress['level']} ({progress['points_to_next_level']} points to next level)[/cyan]"
+                )
+        except Exception:
+            # Don't fail the whole command if we can't get progress info
+            pass
 
 
 @app.command("show")
