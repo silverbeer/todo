@@ -28,9 +28,23 @@ class DatabaseConnection:
 
         Returns:
             Active DuckDB connection.
+
+        Raises:
+            RuntimeError: If database is locked by another process.
         """
         if self._connection is None:
-            self._connection = duckdb.connect(str(self.db_path))
+            try:
+                self._connection = duckdb.connect(str(self.db_path))
+            except duckdb.IOException as e:
+                if "Conflicting lock is held" in str(e):
+                    raise RuntimeError(
+                        f"Database is currently locked by another process.\n"
+                        f"Database path: {self.db_path}\n"
+                        f"Please close any other running instances of the todo app and try again.\n"
+                        f"If no other instances are running, the lock may be stale - "
+                        f"try restarting your terminal or rebooting your system."
+                    ) from e
+                raise  # Re-raise other IOException types
         return self._connection
 
     def close(self) -> None:
