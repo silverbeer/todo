@@ -1,5 +1,6 @@
 """Tests for CLI functionality."""
 
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -566,3 +567,217 @@ class TestCLIIntegration:
         assert "Task #1" in result.stdout
         assert "Test task" in result.stdout
         assert "🤖 AI Analysis" in result.stdout
+
+
+def _make_mock_todo(
+    todo_id=1,
+    title="Test task",
+    status="pending",
+    priority="medium",
+    size="medium",
+):
+    """Build a Mock Todo with the attributes the JSON serializer reads."""
+    todo = Mock()
+    todo.id = todo_id
+    todo.title = title
+    todo.description = None
+    todo.category_id = None
+    todo.category = None
+    todo.status = Mock()
+    todo.status.value = status
+    todo.final_priority = Mock()
+    todo.final_priority.value = priority
+    todo.final_size = Mock()
+    todo.final_size.value = size
+    todo.total_points_earned = 0
+    todo.due_date = None
+    todo.is_overdue = False
+    todo.created_at = "2026-01-01 00:00:00"
+    todo.completed_at = None
+    return todo
+
+
+class TestCLIJsonOutput:
+    """Tests for the --json machine-readable output flag."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.enrichment_service")
+    def test_add_json_no_ai(
+        self,
+        mock_enrichment,
+        mock_todo_repo,
+        mock_migration,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        """add --json --no-ai emits a single JSON object on stdout."""
+        mock_migration.is_schema_initialized.return_value = True
+        todo = _make_mock_todo()
+        mock_todo_repo.create_todo.return_value = todo
+        mock_todo_repo.get_by_id.return_value = todo
+
+        result = runner.invoke(app, ["add", "Test task", "--no-ai", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["id"] == 1
+        assert payload["title"] == "Test task"
+        assert payload["ai_enriched"] is False
+        assert payload["enrichment"] is None
+        # Human-readable confirmation must NOT be on stdout.
+        assert "Added task" not in result.stdout
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.enrichment_service")
+    def test_add_json_empty_title(
+        self,
+        mock_enrichment,
+        mock_todo_repo,
+        mock_migration,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        """add --json with empty title emits a JSON error, not a crash."""
+        mock_migration.is_schema_initialized.return_value = True
+
+        result = runner.invoke(app, ["add", "   ", "--no-ai", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert "error" in payload
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.ai_repo")
+    def test_list_json(
+        self, mock_ai_repo, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """ls --json emits {todos: [...]}."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.get_active_todos.return_value = [_make_mock_todo()]
+        mock_ai_repo.get_latest_by_todo_id.return_value = None
+
+        result = runner.invoke(app, ["ls", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert isinstance(payload["todos"], list)
+        assert payload["todos"][0]["id"] == 1
+        assert payload["todos"][0]["ai_enriched"] is False
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.ai_repo")
+    def test_list_json_empty(
+        self, mock_ai_repo, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """ls --json with no todos emits an empty list, not a prompt."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.get_active_todos.return_value = []
+
+        result = runner.invoke(app, ["ls", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["todos"] == []
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.ai_repo")
+    def test_show_json(
+        self, mock_ai_repo, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """show --json emits the todo object with enrichment key."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.get_by_id.return_value = _make_mock_todo()
+        mock_ai_repo.get_latest_by_todo_id.return_value = None
+
+        result = runner.invoke(app, ["show", "1", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["id"] == 1
+        assert "enrichment" in payload
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_show_json_not_found(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """show --json for a missing id emits a JSON error."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.get_by_id.return_value = None
+
+        result = runner.invoke(app, ["show", "999", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert "error" in payload
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_done_json(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """done --json reports completed and failed ids."""
+        mock_migration.is_schema_initialized.return_value = True
+        completed = _make_mock_todo()
+        completed.scoring_result = None
+        completed.total_points_earned = 0
+        # id 1 completes, id 2 returns None (not found / already done)
+        mock_todo_repo.complete_todo.side_effect = (
+            lambda tid: completed if tid == 1 else None
+        )
+
+        result = runner.invoke(app, ["done", "1", "2", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["completed"] == [1]
+        assert payload["failed"] == [2]
+        assert "achievements" in payload
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    def test_stats_json(self, mock_migration, mock_db, mock_config, runner):
+        """stats --json emits the progress dict."""
+        mock_migration.is_schema_initialized.return_value = True
+        progress = {
+            "total_points": 10,
+            "level": 1,
+            "points_to_next_level": 90,
+            "current_streak": 1,
+            "longest_streak": 2,
+            "total_completed": 3,
+            "daily_goal": 3,
+            "tasks_completed_today": 1,
+            "daily_goal_met": False,
+            "points_earned_today": 5,
+        }
+        with patch("todo.core.scoring.ScoringService") as mock_scoring_cls:
+            mock_scoring_cls.return_value.get_user_progress.return_value = progress
+            result = runner.invoke(app, ["stats", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["total_points"] == 10
+        assert payload["level"] == 1
