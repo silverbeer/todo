@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -852,3 +853,144 @@ class TestCLIDelete:
 
         assert result.exit_code == 0
         mock_todo_repo.delete_todo.assert_called_once_with(1)
+
+
+class TestCLIDue:
+    """Tests for the --due flag on add and the due command."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.enrichment_service")
+    def test_add_with_due(
+        self,
+        mock_enrichment,
+        mock_todo_repo,
+        mock_migration,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        """add --due sets the due date on the new todo."""
+        mock_migration.is_schema_initialized.return_value = True
+        todo = _make_mock_todo()
+        todo.due_date = date(2026, 6, 10)
+        mock_todo_repo.create_todo.return_value = todo
+        mock_todo_repo.get_by_id.return_value = todo
+
+        result = runner.invoke(
+            app, ["add", "Pay rent", "--no-ai", "--due", "today", "--json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["due_date"] == "2026-06-10"
+        # update_todo called with a due_date value
+        args = mock_todo_repo.update_todo.call_args
+        assert "due_date" in args.args[1]
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.enrichment_service")
+    def test_add_with_invalid_due(
+        self,
+        mock_enrichment,
+        mock_todo_repo,
+        mock_migration,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        """add --due with an unparseable date errors and creates nothing."""
+        mock_migration.is_schema_initialized.return_value = True
+
+        result = runner.invoke(
+            app, ["add", "Pay rent", "--no-ai", "--due", "asdfqwer", "--json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert "error" in payload
+        mock_todo_repo.create_todo.assert_not_called()
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.ai_repo")
+    def test_due_command_set(
+        self, mock_ai_repo, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """due <id> <when> updates the due date."""
+        mock_migration.is_schema_initialized.return_value = True
+        todo = _make_mock_todo()
+        todo.due_date = date(2026, 6, 10)
+        mock_todo_repo.get_by_id.return_value = todo
+        mock_ai_repo.get_latest_by_todo_id.return_value = None
+
+        result = runner.invoke(app, ["due", "1", "today", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["due_date"] == "2026-06-10"
+        assert "due_date" in mock_todo_repo.update_todo.call_args.args[1]
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    @patch("todo.cli.main.ai_repo")
+    def test_due_command_clear(
+        self, mock_ai_repo, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """due <id> --clear sets due_date to None."""
+        mock_migration.is_schema_initialized.return_value = True
+        todo = _make_mock_todo()
+        todo.due_date = None
+        mock_todo_repo.get_by_id.return_value = todo
+        mock_ai_repo.get_latest_by_todo_id.return_value = None
+
+        result = runner.invoke(app, ["due", "1", "--clear", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["due_date"] is None
+        assert mock_todo_repo.update_todo.call_args.args[1] == {"due_date": None}
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_due_command_not_found(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """due for a missing id emits a JSON error."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.get_by_id.return_value = None
+
+        result = runner.invoke(app, ["due", "999", "today", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert "error" in payload
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_due_command_requires_value(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """due with neither a date nor --clear errors."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.get_by_id.return_value = _make_mock_todo()
+
+        result = runner.invoke(app, ["due", "1", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert "error" in payload
+        mock_todo_repo.update_todo.assert_not_called()

@@ -11,6 +11,7 @@ from rich.table import Table
 from ..ai.background import BackgroundEnrichmentService
 from ..ai.enrichment_service import EnrichmentService
 from ..core.config import get_app_config
+from ..core.dates import parse_due_date
 from ..db.connection import DatabaseConnection
 from ..db.migrations import MigrationManager
 from ..db.repository import AIEnrichmentRepository, TodoRepository
@@ -153,6 +154,12 @@ def add_todo(
     provider: str | None = typer.Option(
         None, "--provider", "-p", help="AI provider (openai/anthropic)"
     ),
+    due: str | None = typer.Option(
+        None,
+        "--due",
+        "-D",
+        help="Due date, e.g. 'today', 'EOW', 'next monday', '6/11'",
+    ),
     json_out: bool = typer.Option(
         False, "--json", "-j", help="Emit result as JSON (machine-readable)"
     ),
@@ -170,12 +177,27 @@ def add_todo(
             _emit_json({"error": "Task title cannot be empty"})
         return
 
+    # Parse the due date up front so a bad value fails before we create anything.
+    due_date = None
+    if due:
+        try:
+            due_date = parse_due_date(due)
+        except ValueError as e:
+            out.print(f"[red]✗ {e}[/red]")
+            if json_out:
+                _emit_json({"error": str(e)})
+            return
+
     # Create the basic todo
     try:
         todo = todo_repo.create_todo(task.strip(), description)
+        if due_date:
+            todo_repo.update_todo(todo.id, {"due_date": due_date})
         if not json_out:
             console.print(f"[green]✓ Added task:[/green] {task.strip()}")
             console.print(f"[dim]Task ID: {todo.id}[/dim]")
+            if due_date:
+                console.print(f"[dim]Due: {due_date.isoformat()}[/dim]")
     except Exception as e:
         error_msg = str(e)
         if "string_too_short" in error_msg or "at least 1 character" in error_msg:
@@ -368,6 +390,7 @@ def list_todos(
     table.add_column("Category", style="blue", width=10)
     table.add_column("Status", style="green")
     table.add_column("Priority", style="yellow")
+    table.add_column("Due", style="cyan", width=10)
     table.add_column("AI", style="magenta", width=3)
 
     for todo in todos:
@@ -404,12 +427,21 @@ def list_todos(
         )
         status_text = f"{status_icon} {status_value.title()}"
 
+        # Format due date (red when overdue)
+        if todo.due_date:
+            due_text = todo.due_date.isoformat()
+            if todo.is_overdue:
+                due_text = f"[red]{due_text}[/red]"
+        else:
+            due_text = "—"
+
         table.add_row(
             str(todo.id),
             todo.title[:60] + "..." if len(todo.title) > 60 else todo.title,
             category[:10],  # Truncate category to fit column width
             status_text,
             priority,
+            due_text,
             ai_status,
         )
 
@@ -620,6 +652,69 @@ def delete_todo_cmd(
 
     if json_out:
         _emit_json({"deleted": deleted, "failed": failed})
+
+
+@app.command("due")
+def set_due(
+    todo_id: int,
+    when: str | None = typer.Argument(
+        None, help="Due date, e.g. 'today', 'EOW', 'next monday', '6/11'"
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Clear the due date"),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit result as JSON (machine-readable)"
+    ),
+) -> None:
+    """Set or change a todo's due date.
+
+    Examples:
+        todo due 42 today
+        todo due 42 "next monday"
+        todo due 42 07/04/2026
+        todo due 42 --clear        # remove the due date
+    """
+    _initialize_services()
+
+    out = console_err if json_out else console
+
+    todo = todo_repo.get_by_id(todo_id)
+    if not todo:
+        if json_out:
+            _emit_json({"error": f"Todo {todo_id} not found"})
+        else:
+            out.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        return
+
+    if clear:
+        due_date = None
+    elif when:
+        try:
+            due_date = parse_due_date(when)
+        except ValueError as e:
+            if json_out:
+                _emit_json({"error": str(e)})
+            else:
+                out.print(f"[red]✗ {e}[/red]")
+            return
+    else:
+        msg = "Provide a due date or use --clear"
+        if json_out:
+            _emit_json({"error": msg})
+        else:
+            out.print(f"[red]✗ {msg}[/red]")
+        return
+
+    todo_repo.update_todo(todo_id, {"due_date": due_date})
+    updated = todo_repo.get_by_id(todo_id) or todo
+
+    if json_out:
+        _emit_json(_todo_to_dict(updated, ai_repo.get_latest_by_todo_id(todo_id)))
+        return
+
+    if due_date:
+        console.print(f"[green]✓ Todo {todo_id} due {due_date.isoformat()}[/green]")
+    else:
+        console.print(f"[green]✓ Cleared due date for todo {todo_id}[/green]")
 
 
 @app.command("show")
