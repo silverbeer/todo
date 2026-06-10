@@ -25,7 +25,7 @@ class AIConfig(BaseModel):
     # Model configurations
     openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model to use")
     anthropic_model: str = Field(
-        default="claude-3-haiku-20240307", description="Anthropic model to use"
+        default="claude-haiku-4-5", description="Anthropic model to use"
     )
 
     # Provider settings
@@ -69,7 +69,7 @@ def get_app_config() -> AppConfig:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         openai_model=os.getenv("TODO_OPENAI_MODEL", "gpt-4o-mini"),
-        anthropic_model=os.getenv("TODO_ANTHROPIC_MODEL", "claude-3-haiku-20240307"),
+        anthropic_model=os.getenv("TODO_ANTHROPIC_MODEL", "claude-haiku-4-5"),
         default_provider=AIProvider(os.getenv("TODO_DEFAULT_AI_PROVIDER", "openai")),
         confidence_threshold=float(os.getenv("TODO_AI_CONFIDENCE_THRESHOLD", "0.7")),
         request_timeout=int(os.getenv("TODO_AI_REQUEST_TIMEOUT", "30")),

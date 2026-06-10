@@ -59,7 +59,7 @@ class OpenAIProvider(BaseLLMProvider):
 class AnthropicProvider(BaseLLMProvider):
     """Anthropic (Claude) provider implementation."""
 
-    def __init__(self, api_key: str, model_name: str = "claude-3-haiku-20240307"):
+    def __init__(self, api_key: str, model_name: str = "claude-haiku-4-5"):
         super().__init__(api_key, model_name)
         self.client = AsyncAnthropic(api_key=api_key)
 

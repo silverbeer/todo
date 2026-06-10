@@ -312,7 +312,7 @@ class AIConfig(BaseModel):
 
     # Model preferences
     openai_model: str = "gpt-4o-mini"
-    anthropic_model: str = "claude-3-haiku-20240307"
+    anthropic_model: str = "claude-haiku-4-5"
 
     # Enrichment settings
     enable_auto_enrichment: bool = True
