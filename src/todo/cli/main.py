@@ -184,13 +184,14 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
     }
 
 
-def _push_event_to_google(event: Any) -> str | None:
+def _push_event_to_google(event: Any, *, send_invites: bool = False) -> str | None:
     """Push an event to Google Calendar and persist its id.
 
-    Returns None on success, or an error message string on failure.
+    Attendees are emailed only when ``send_invites`` is True. Returns None on
+    success, or an error message string on failure.
     """
     try:
-        gid = gcal_client.push_event(event)
+        gid = gcal_client.push_event(event, send_invites=send_invites)
     except CalendarAuthError as e:
         return str(e)
     except Exception as e:  # noqa: BLE001 - report any push failure to the user
@@ -1490,6 +1491,12 @@ def event_add(
     no_sync: bool = typer.Option(
         False, "--no-sync", help="Don't push to Google Calendar"
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Send invites without confirming"
+    ),
+    no_invite: bool = typer.Option(
+        False, "--no-invite", help="Sync the event but don't invite anyone"
+    ),
     json_out: bool = typer.Option(
         False, "--json", "-j", help="Emit result as JSON (machine-readable)"
     ),
@@ -1575,14 +1582,24 @@ def event_add(
         event_repo.set_attendees(event.id, emails)
         event.attendees = emails
 
-    # Push to Google Calendar (best-effort) unless --no-sync.
+    # Push to Google Calendar (best-effort) unless --no-sync. Invites (emails to
+    # attendees) only go out on explicit confirmation / --yes.
     sync_error = None
+    send_invites = False
     if no_sync:
         sync_error = "skipped"
     elif not gcal_client.is_authenticated():
         sync_error = "not-authenticated"
     else:
-        sync_error = _push_event_to_google(event)
+        if emails and not no_invite:
+            if yes:
+                send_invites = True
+            elif not json_out:
+                send_invites = typer.confirm(
+                    f"Send calendar invites to {', '.join(emails)}?"
+                )
+            # JSON / non-interactive without --yes: don't email (safe default).
+        sync_error = _push_event_to_google(event, send_invites=send_invites)
 
     if json_out:
         _emit_json(_event_to_dict(event))
@@ -1597,7 +1614,12 @@ def event_add(
     if emails:
         console.print(f"[dim]Invitees: {', '.join(emails)}[/dim]")
     if event.is_synced:
-        console.print("[dim]✓ Synced to Google Calendar[/dim]")
+        msg = "✓ Synced to Google Calendar"
+        if send_invites:
+            msg += f" · invited {len(emails)}"
+        elif emails:
+            msg += " (no invites sent — use --yes or 'todo event invite')"
+        console.print(f"[dim]{msg}[/dim]")
     elif sync_error == "not-authenticated":
         console.print(
             "[dim]Local only — run 'todo calendar auth' to sync to Google.[/dim]"
@@ -1812,6 +1834,74 @@ def event_sync(
     console.print(f"[green]✓ Synced {len(synced)} event(s)[/green]")
     if failed:
         console.print(f"[red]✗ {len(failed)} failed[/red]")
+
+
+@event_app.command("invite")
+def event_invite(
+    event_id: int,
+    tokens: list[str] = typer.Argument(
+        None, help="Extra aliases/emails to add before inviting"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirm prompt"),
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Send Google Calendar invites to an event's attendees.
+
+    Optionally add more invitees first:
+        todo event invite 12 family
+    """
+    _initialize_services()
+    out = console_err if json_out else console
+
+    if not gcal_client.is_authenticated():
+        _emit_error(out, json_out, "Not authenticated — run 'todo calendar auth'")
+        return
+
+    event = event_repo.get_by_id(event_id)
+    if not event:
+        _emit_error(out, json_out, f"Event {event_id} not found")
+        return
+
+    if tokens:
+        new_emails = contact_repo.resolve(tokens)
+        merged = list(dict.fromkeys(list(event.attendees) + new_emails))
+        event_repo.set_attendees(event_id, merged)
+        event.attendees = merged
+
+    if not event.attendees:
+        _emit_error(
+            out, json_out, "No invitees — add some: todo event invite <id> wife kids"
+        )
+        return
+
+    if (
+        not yes
+        and not json_out
+        and not typer.confirm(f"Send calendar invites to {', '.join(event.attendees)}?")
+    ):
+        console.print("[yellow]Aborted[/yellow]")
+        return
+
+    try:
+        if event.is_synced:
+            gcal_client.update_event(event, send_invites=True)
+        else:
+            gid = gcal_client.push_event(event, send_invites=True)
+            event_repo.set_google_ids(event_id, gid, gcal_client.calendar_id)
+            event.google_event_id = gid
+    except CalendarAuthError as e:
+        _emit_error(out, json_out, str(e))
+        return
+    except Exception as e:  # noqa: BLE001 - surface push/update failure
+        _emit_error(out, json_out, f"Invite failed: {e}")
+        return
+
+    if json_out:
+        _emit_json({"event_id": event_id, "invited": event.attendees})
+        return
+    console.print(
+        f"[green]✓ Invited {len(event.attendees)}:[/green] {', '.join(event.attendees)}"
+    )
 
 
 app.add_typer(event_app, name="event")

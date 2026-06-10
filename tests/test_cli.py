@@ -1420,3 +1420,135 @@ class TestCLICalendar:
 
         assert result.exit_code == 0
         mock_gcal.push_event.assert_not_called()
+
+
+class TestCLIInvites:
+    """Tests for sending Google Calendar invites (Phase 3)."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.contact_repo")
+    @patch("todo.cli.main.gcal_client")
+    def test_add_with_yes_sends_invites(
+        self,
+        mock_gcal,
+        mock_contacts,
+        mock_events,
+        mock_mig,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.resolve.return_value = ["keri@x.com"]
+        mock_gcal.is_authenticated.return_value = True
+        mock_gcal.calendar_id = "primary"
+        mock_gcal.push_event.return_value = "g_1"
+        mock_events.create_event.return_value = _make_mock_event()
+
+        result = runner.invoke(
+            app,
+            [
+                "event",
+                "add",
+                "Dinner",
+                "--when",
+                "2026-06-13 18:00",
+                "--invite",
+                "wife",
+                "--no-ai",
+                "--yes",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert mock_gcal.push_event.call_args.kwargs["send_invites"] is True
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.contact_repo")
+    @patch("todo.cli.main.gcal_client")
+    def test_add_json_does_not_send_invites_without_yes(
+        self,
+        mock_gcal,
+        mock_contacts,
+        mock_events,
+        mock_mig,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.resolve.return_value = ["keri@x.com"]
+        mock_gcal.is_authenticated.return_value = True
+        mock_gcal.calendar_id = "primary"
+        mock_gcal.push_event.return_value = "g_1"
+        mock_events.create_event.return_value = _make_mock_event()
+
+        result = runner.invoke(
+            app,
+            [
+                "event",
+                "add",
+                "Dinner",
+                "--when",
+                "2026-06-13 18:00",
+                "--invite",
+                "wife",
+                "--no-ai",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # safe default: synced but no email sent
+        assert mock_gcal.push_event.call_args.kwargs["send_invites"] is False
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.contact_repo")
+    @patch("todo.cli.main.gcal_client")
+    def test_event_invite_updates_synced_event(
+        self,
+        mock_gcal,
+        mock_contacts,
+        mock_events,
+        mock_mig,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_gcal.is_authenticated.return_value = True
+        ev = _make_mock_event(attendees=["keri@x.com", "elise@x.com"])
+        ev.is_synced = True
+        mock_events.get_by_id.return_value = ev
+
+        result = runner.invoke(app, ["event", "invite", "1", "--yes", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["invited"] == ["keri@x.com", "elise@x.com"]
+        assert mock_gcal.update_event.call_args.kwargs["send_invites"] is True
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.gcal_client")
+    def test_event_invite_not_authenticated(
+        self, mock_gcal, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_gcal.is_authenticated.return_value = False
+
+        result = runner.invoke(app, ["event", "invite", "1", "--json"])
+
+        assert result.exit_code == 0
+        assert "error" in json.loads(result.stdout.strip())
