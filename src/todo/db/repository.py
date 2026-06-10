@@ -2,7 +2,7 @@
 
 import json
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
 from typing import Any, TypeVar
 from uuid import uuid4
 
@@ -12,7 +12,10 @@ from ..models import (
     AILearningFeedback,
     AIProvider,
     Category,
+    Contact,
     DailyActivity,
+    Event,
+    EventStatus,
     Priority,
     TaskSize,
     Todo,
@@ -1105,3 +1108,182 @@ class AILearningFeedbackRepository(BaseRepository[AILearningFeedback]):
         )
         results = cursor.fetchall()
         return [self._row_to_model(_row_to_dict(row, cursor)) for row in results]
+
+
+class EventRepository(BaseRepository[Event]):
+    """Repository for calendar Event operations."""
+
+    def _get_table_name(self) -> str:
+        return "events"
+
+    def _row_to_model(self, row: dict[str, Any]) -> Event:
+        if row.get("status"):
+            row["status"] = EventStatus(row["status"])
+        return Event(**row)
+
+    def create_event(
+        self,
+        title: str,
+        start_at: datetime,
+        *,
+        end_at: datetime | None = None,
+        description: str | None = None,
+        location: str | None = None,
+        all_day: bool = False,
+    ) -> Event:
+        """Create a new event and return it (with empty attendee list)."""
+        conn = self.db.connect()
+        cursor = conn.execute(
+            """
+            INSERT INTO events
+                (uuid, title, description, start_at, end_at, all_day, location)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING *
+            """,
+            [str(uuid4()), title, description, start_at, end_at, all_day, location],
+        )
+        event = self._row_to_model(_row_to_dict(cursor.fetchone(), cursor))
+        event.attendees = self.get_attendees(event.id)
+        return event
+
+    def get_by_id(self, record_id: int) -> Event | None:
+        """Get an event by id, with its attendees populated."""
+        event = super().get_by_id(record_id)
+        if event:
+            event.attendees = self.get_attendees(record_id)
+        return event
+
+    def list_events(
+        self,
+        *,
+        upcoming_only: bool = True,
+        include_cancelled: bool = False,
+        limit: int | None = None,
+    ) -> list[Event]:
+        """List events ordered by start time, with attendees populated."""
+        conn = self.db.connect()
+        clauses: list[str] = []
+        if not include_cancelled:
+            clauses.append("status != 'cancelled'")
+        if upcoming_only:
+            clauses.append("start_at >= CURRENT_TIMESTAMP")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        query = f"SELECT * FROM events {where} ORDER BY start_at ASC"
+        params: list[Any] = []
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        cursor = conn.execute(query, params)
+        rows = cursor.fetchall()
+        cols = [d[0] for d in cursor.description]
+        events = [self._row_to_model(dict(zip(cols, r))) for r in rows]
+        for event in events:
+            event.attendees = self.get_attendees(event.id)
+        return events
+
+    def cancel_event(self, event_id: int) -> Event | None:
+        """Mark an event cancelled. Returns None if it does not exist."""
+        conn = self.db.connect()
+        if super().get_by_id(event_id) is None:
+            return None
+        conn.execute(
+            "UPDATE events SET status = 'cancelled', "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [event_id],
+        )
+        return self.get_by_id(event_id)
+
+    def delete_event(self, event_id: int) -> bool:
+        """Permanently delete an event and its attendees."""
+        conn = self.db.connect()
+        if super().get_by_id(event_id) is None:
+            return False
+        conn.execute("DELETE FROM event_attendees WHERE event_id = ?", [event_id])
+        conn.execute("DELETE FROM events WHERE id = ?", [event_id])
+        return super().get_by_id(event_id) is None
+
+    def set_attendees(self, event_id: int, emails: list[str]) -> None:
+        """Replace the attendee list for an event (deduped, order preserved)."""
+        conn = self.db.connect()
+        conn.execute("DELETE FROM event_attendees WHERE event_id = ?", [event_id])
+        for email in dict.fromkeys(emails):
+            conn.execute(
+                "INSERT INTO event_attendees (event_id, email) VALUES (?, ?) "
+                "ON CONFLICT DO NOTHING",
+                [event_id, email],
+            )
+
+    def get_attendees(self, event_id: int) -> list[str]:
+        """Return the attendee emails for an event."""
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT email FROM event_attendees WHERE event_id = ? ORDER BY email",
+            [event_id],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+
+class ContactRepository(BaseRepository[Contact]):
+    """Repository for contact-alias operations."""
+
+    def _get_table_name(self) -> str:
+        return "contacts"
+
+    def _row_to_model(self, row: dict[str, Any]) -> Contact:
+        return Contact(**row)
+
+    def add_contact(self, alias: str, email: str) -> Contact:
+        """Add an (alias, email) mapping. No-op if it already exists."""
+        conn = self.db.connect()
+        conn.execute(
+            "INSERT INTO contacts (alias, email) VALUES (?, ?) "
+            "ON CONFLICT (alias, email) DO NOTHING",
+            [alias.lower(), email],
+        )
+        return Contact(alias=alias.lower(), email=email)
+
+    def get_emails(self, alias: str) -> list[str]:
+        """Return all emails mapped to an alias."""
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT email FROM contacts WHERE alias = ? ORDER BY email",
+            [alias.lower()],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_contacts(self) -> dict[str, list[str]]:
+        """Return all aliases mapped to their email lists."""
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT alias, email FROM contacts ORDER BY alias, email"
+        ).fetchall()
+        out: dict[str, list[str]] = {}
+        for alias, email in rows:
+            out.setdefault(alias, []).append(email)
+        return out
+
+    def remove_alias(self, alias: str) -> int:
+        """Delete all mappings for an alias. Returns how many were removed."""
+        conn = self.db.connect()
+        count = len(self.get_emails(alias))
+        if count:
+            conn.execute("DELETE FROM contacts WHERE alias = ?", [alias.lower()])
+        return count
+
+    def resolve(self, tokens: list[str]) -> list[str]:
+        """Resolve a mix of aliases and raw emails to a deduped email list.
+
+        A token containing '@' is treated as a literal email; otherwise it is
+        looked up as an alias (unknown aliases contribute nothing).
+        """
+        emails: list[str] = []
+        for raw in tokens:
+            token = raw.strip()
+            if not token:
+                continue
+            if "@" in token:
+                emails.append(token)
+            else:
+                emails.extend(self.get_emails(token))
+        return list(dict.fromkeys(emails))

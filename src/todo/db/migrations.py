@@ -93,6 +93,68 @@ class MigrationManager:
             print(f"❌ Error recording initial migration: {e}")
             raise
 
+    # Statements mirror the events/contacts section of schema.sql. Kept here so
+    # already-initialized databases (which the legacy runner never re-touches)
+    # also get the tables. All idempotent (CREATE ... IF NOT EXISTS).
+    _EVENTS_DDL = [
+        "CREATE SEQUENCE IF NOT EXISTS events_id_seq",
+        """CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY DEFAULT nextval('events_id_seq'),
+            uuid VARCHAR(36) NOT NULL UNIQUE,
+            title VARCHAR(500) NOT NULL,
+            description VARCHAR(2000),
+            start_at TIMESTAMP NOT NULL,
+            end_at TIMESTAMP,
+            all_day BOOLEAN DEFAULT FALSE,
+            location VARCHAR(500),
+            status VARCHAR(20) NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'cancelled')),
+            google_event_id VARCHAR(255),
+            google_calendar_id VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_at)",
+        "CREATE INDEX IF NOT EXISTS idx_events_status ON events(status)",
+        "CREATE SEQUENCE IF NOT EXISTS contacts_id_seq",
+        """CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY DEFAULT nextval('contacts_id_seq'),
+            alias VARCHAR(50) NOT NULL,
+            email VARCHAR(254) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (alias, email)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_contacts_alias ON contacts(alias)",
+        "CREATE SEQUENCE IF NOT EXISTS event_attendees_id_seq",
+        # No hard FK on event_id: DuckDB rejects UPDATEs on a referenced parent.
+        """CREATE TABLE IF NOT EXISTS event_attendees (
+            id INTEGER PRIMARY KEY DEFAULT nextval('event_attendees_id_seq'),
+            event_id INTEGER NOT NULL,
+            email VARCHAR(254) NOT NULL,
+            response_status VARCHAR(20) DEFAULT 'needsAction',
+            UNIQUE (event_id, email)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_event_attendees_event ON event_attendees(event_id)",
+    ]
+
+    def ensure_events_schema(self) -> None:
+        """Ensure the events/contacts tables exist (migration v3).
+
+        Idempotent and safe to call on every startup — covers databases that
+        were initialized before these tables existed.
+        """
+        conn = self.db.connect()
+        for stmt in self._EVENTS_DDL:
+            conn.execute(stmt)
+        if self.get_current_version() < 3:
+            self._ensure_migration_table()
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name)
+                VALUES (3, 'events_and_contacts')
+                ON CONFLICT(version) DO NOTHING
+                """
+            )
+
     def ensure_completion_note(self) -> None:
         """Ensure the todos.completion_note column exists (migration v4).
 

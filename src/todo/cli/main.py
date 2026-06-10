@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
 from typing import Any
 
 import typer
@@ -10,11 +12,17 @@ from rich.table import Table
 
 from ..ai.background import BackgroundEnrichmentService
 from ..ai.enrichment_service import EnrichmentService
+from ..ai.event_parser import EventParser
 from ..core.config import get_app_config
-from ..core.dates import parse_due_date
+from ..core.dates import parse_datetime, parse_due_date
 from ..db.connection import DatabaseConnection
 from ..db.migrations import MigrationManager
-from ..db.repository import AIEnrichmentRepository, TodoRepository
+from ..db.repository import (
+    AIEnrichmentRepository,
+    ContactRepository,
+    EventRepository,
+    TodoRepository,
+)
 from ..models import AIProvider
 
 console = Console()
@@ -35,6 +43,9 @@ todo_repo = None
 ai_repo = None
 enrichment_service = None
 background_service = None
+event_repo = None
+contact_repo = None
+event_parser = None
 
 
 def _initialize_services():
@@ -46,7 +57,10 @@ def _initialize_services():
         todo_repo, \
         ai_repo, \
         enrichment_service, \
-        background_service
+        background_service, \
+        event_repo, \
+        contact_repo, \
+        event_parser
 
     if db is not None:
         return  # Already initialized
@@ -63,14 +77,18 @@ def _initialize_services():
             )
             migration_manager.run_migrations()
 
-        # Ensure newer columns exist even on databases initialized before they
-        # were added. Idempotent.
+        # Ensure newer tables/columns exist even on databases initialized
+        # before they were added. Idempotent.
+        migration_manager.ensure_events_schema()
         migration_manager.ensure_completion_note()
 
         todo_repo = TodoRepository(db)
         ai_repo = AIEnrichmentRepository(db)
         enrichment_service = EnrichmentService(db)
         background_service = BackgroundEnrichmentService(db)
+        event_repo = EventRepository(db)
+        contact_repo = ContactRepository(db)
+        event_parser = EventParser()
     except RuntimeError as e:
         # Handle database lock errors gracefully
         console.print(f"[red]✗ Database Error:[/red] {e}")
@@ -140,6 +158,24 @@ def _todo_to_dict(todo: Any, ai_enrichment: Any = None) -> dict[str, Any]:
         "completed_at": todo.completed_at,
         "completion_note": todo.completion_note,
         "ai_enriched": ai_enrichment is not None,
+    }
+
+
+def _event_to_dict(event: Any) -> dict[str, Any]:
+    """Serialize an Event to a plain dict."""
+    return {
+        "id": event.id,
+        "title": event.title,
+        "description": event.description,
+        "start_at": event.start_at,
+        "end_at": event.end_at,
+        "all_day": event.all_day,
+        "location": event.location,
+        "status": _enum_val(event.status),
+        "attendees": list(event.attendees),
+        "google_event_id": event.google_event_id,
+        "is_synced": event.is_synced,
+        "created_at": event.created_at,
     }
 
 
@@ -1392,6 +1428,360 @@ def delete_goal(goal_id: int = typer.Argument(..., help="Goal ID to delete")) ->
 
 
 app.add_typer(goal_app, name="goal")
+
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+event_app = typer.Typer(help="Calendar event management")
+
+
+def _emit_error(out, json_out: bool, message: str) -> None:
+    """Report an error to stderr/console, and as JSON when in --json mode."""
+    out.print(f"[red]✗ {message}[/red]")
+    if json_out:
+        _emit_json({"error": message})
+
+
+@event_app.command("add")
+def event_add(
+    text: str,
+    when: str | None = typer.Option(
+        None, "--when", "-w", help="Date/time for flag mode, e.g. '2026-06-12 19:00'"
+    ),
+    duration: int | None = typer.Option(None, "--duration", help="Duration in minutes"),
+    end: str | None = typer.Option(None, "--end", help="Explicit end date/time"),
+    location: str | None = typer.Option(None, "--location", "-L"),
+    description: str | None = typer.Option(None, "--desc", "-d"),
+    invite: str | None = typer.Option(
+        None, "--invite", "-i", help="Comma-separated aliases/emails to invite"
+    ),
+    no_ai: bool = typer.Option(False, "--no-ai", help="Skip AI parsing; use flags"),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit result as JSON (machine-readable)"
+    ),
+) -> None:
+    """Add a calendar event from natural language or explicit flags.
+
+    Examples:
+        todo event add "dinner with parents friday 7pm, invite wife and kids"
+        todo event add "Dinner" --when "2026-06-12 19:00" --invite wife,kids --no-ai
+    """
+    _initialize_services()
+    out = console_err if json_out else console
+
+    title = text.strip()
+    end_at = None
+    all_day = False
+    attendee_tokens: list[str] = []
+
+    if no_ai or when:
+        # Flag mode.
+        if not when:
+            _emit_error(out, json_out, "Flag mode needs --when (or use AI parsing)")
+            return
+        try:
+            start_at = parse_datetime(when)
+            if end:
+                end_at = parse_datetime(end)
+        except ValueError as e:
+            _emit_error(out, json_out, str(e))
+            return
+        if invite:
+            attendee_tokens = [t.strip() for t in invite.split(",") if t.strip()]
+    else:
+        # AI mode: the model extracts raw phrases; we resolve dates ourselves.
+        draft = asyncio.run(event_parser.parse(text, datetime.now()))
+        if not draft:
+            _emit_error(out, json_out, "AI parsing failed — add manually with --when")
+            return
+        title = draft.title
+        try:
+            day = (
+                parse_due_date(draft.date_phrase) if draft.date_phrase else date.today()
+            )
+        except ValueError:
+            _emit_error(out, json_out, f"Could not understand the date in: {text!r}")
+            return
+
+        if draft.time:
+            try:
+                start_at = datetime.combine(day, parse_datetime(draft.time).time())
+            except ValueError:
+                start_at = datetime.combine(day, dt_time(0, 0))
+                all_day = True
+        else:
+            start_at = datetime.combine(day, dt_time(0, 0))
+            all_day = True
+
+        if draft.end_time:
+            try:
+                end_at = datetime.combine(day, parse_datetime(draft.end_time).time())
+            except ValueError:
+                end_at = None
+        elif draft.duration_minutes:
+            end_at = start_at + timedelta(minutes=draft.duration_minutes)
+
+        location = location or draft.location
+        attendee_tokens = draft.attendees
+
+    if duration and not end_at:
+        end_at = start_at + timedelta(minutes=duration)
+
+    event = event_repo.create_event(
+        title,
+        start_at,
+        end_at=end_at,
+        description=description,
+        location=location,
+        all_day=all_day,
+    )
+
+    emails = contact_repo.resolve(attendee_tokens) if attendee_tokens else []
+    if emails:
+        event_repo.set_attendees(event.id, emails)
+        event.attendees = emails
+
+    if json_out:
+        _emit_json(_event_to_dict(event))
+        return
+
+    console.print(f"[green]✓ Event:[/green] {event.title}")
+    console.print(
+        f"[dim]ID {event.id} · {event.start_at.strftime('%Y-%m-%d %H:%M')}[/dim]"
+    )
+    if event.location:
+        console.print(f"[dim]Where: {event.location}[/dim]")
+    if emails:
+        console.print(f"[dim]Invitees: {', '.join(emails)}[/dim]")
+    console.print("[dim]Local only — Google Calendar sync lands in Phase 2.[/dim]")
+
+
+@event_app.command("ls")
+@event_app.command("list")
+def event_list(
+    all_events: bool = typer.Option(
+        False, "--all", "-a", help="Include past and cancelled events"
+    ),
+    limit: int = typer.Option(20, "--limit", "-l"),
+    json_out: bool = typer.Option(False, "--json", "-j", help="Emit events as JSON"),
+) -> None:
+    """List upcoming events (or all with --all)."""
+    _initialize_services()
+
+    events = event_repo.list_events(
+        upcoming_only=not all_events,
+        include_cancelled=all_events,
+        limit=limit,
+    )
+
+    if json_out:
+        _emit_json({"events": [_event_to_dict(e) for e in events]})
+        return
+
+    if not events:
+        console.print("[yellow]No events found[/yellow]")
+        console.print("[dim]Add one with 'todo event add <text>'[/dim]")
+        return
+
+    table = Table(title="📅 Events", show_header=True, header_style="bold blue")
+    table.add_column("ID", style="cyan", width=3)
+    table.add_column("Event", style="white")
+    table.add_column("When", style="green")
+    table.add_column("Where", style="blue")
+    table.add_column("Invitees", style="magenta")
+    table.add_column("Sync", style="yellow", width=4)
+
+    for event in events:
+        when = (
+            event.start_at.strftime("%Y-%m-%d")
+            if event.all_day
+            else event.start_at.strftime("%Y-%m-%d %H:%M")
+        )
+        title = event.title
+        if event.status.value == "cancelled":
+            title = f"[strike]{title}[/strike]"
+        table.add_row(
+            str(event.id),
+            title,
+            when,
+            event.location or "—",
+            str(len(event.attendees)) if event.attendees else "—",
+            "✓" if event.is_synced else "○",
+        )
+
+    console.print(table)
+
+
+@event_app.command("show")
+def event_show(
+    event_id: int,
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Show details for one event."""
+    _initialize_services()
+
+    event = event_repo.get_by_id(event_id)
+    if not event:
+        _emit_error(
+            console_err if json_out else console,
+            json_out,
+            f"Event {event_id} not found",
+        )
+        return
+
+    if json_out:
+        _emit_json(_event_to_dict(event))
+        return
+
+    console.print(f"\n[bold cyan]Event #{event.id}[/bold cyan]")
+    console.print(f"[white]{event.title}[/white]")
+    if event.description:
+        console.print(f"[dim]{event.description}[/dim]")
+    info = Table(show_header=False, show_edge=False, padding=(0, 2))
+    info.add_column("Field", style="cyan", width=12)
+    info.add_column("Value", style="white")
+    when = (
+        event.start_at.strftime("%Y-%m-%d")
+        if event.all_day
+        else event.start_at.strftime("%Y-%m-%d %H:%M")
+    )
+    info.add_row("When", when)
+    if event.end_at:
+        info.add_row("Ends", event.end_at.strftime("%Y-%m-%d %H:%M"))
+    info.add_row("Status", event.status.value.title())
+    if event.location:
+        info.add_row("Where", event.location)
+    if event.attendees:
+        info.add_row("Invitees", ", ".join(event.attendees))
+    info.add_row("Synced", "Yes" if event.is_synced else "No")
+    console.print(info)
+
+
+@event_app.command("cancel")
+def event_cancel(
+    event_id: int,
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Mark an event cancelled (kept in history; excluded from the default list)."""
+    _initialize_services()
+
+    event = event_repo.cancel_event(event_id)
+    if not event:
+        _emit_error(
+            console_err if json_out else console,
+            json_out,
+            f"Event {event_id} not found",
+        )
+        return
+
+    if json_out:
+        _emit_json(_event_to_dict(event))
+        return
+    console.print(f"[green]✓ Cancelled event {event_id}:[/green] {event.title}")
+
+
+@event_app.command("delete")
+@event_app.command("rm")
+def event_delete(
+    event_id: int,
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Permanently delete an event (and its attendees). Cannot be undone."""
+    _initialize_services()
+    out = console_err if json_out else console
+
+    if not force:
+        if json_out:
+            _emit_json({"error": "Refusing to delete without --force in --json mode"})
+            return
+        if not typer.confirm(f"Permanently delete event {event_id}?"):
+            console.print("[yellow]Aborted[/yellow]")
+            return
+
+    deleted = event_repo.delete_event(event_id)
+    if json_out:
+        _emit_json({"deleted": event_id if deleted else None, "found": deleted})
+        return
+    if deleted:
+        console.print(f"[green]🗑  Deleted event {event_id}[/green]")
+    else:
+        out.print(f"[red]✗ Event {event_id} not found[/red]")
+
+
+app.add_typer(event_app, name="event")
+
+
+# ---------------------------------------------------------------------------
+# Contacts
+# ---------------------------------------------------------------------------
+contact_app = typer.Typer(help="Contact aliases for event invites")
+
+
+@contact_app.command("add")
+def contact_add(
+    alias: str,
+    emails: list[str] = typer.Argument(..., help="One or more emails for this alias"),
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Map an alias to one or more emails (e.g. 'contact add kids a@x.com b@x.com')."""
+    _initialize_services()
+
+    for email in emails:
+        contact_repo.add_contact(alias, email)
+    all_emails = contact_repo.get_emails(alias)
+
+    if json_out:
+        _emit_json({"alias": alias.lower(), "emails": all_emails})
+        return
+    console.print(f"[green]✓ {alias.lower()}[/green] → {', '.join(all_emails)}")
+
+
+@contact_app.command("ls")
+@contact_app.command("list")
+def contact_list(
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """List all contact aliases and their emails."""
+    _initialize_services()
+
+    contacts = contact_repo.list_contacts()
+    if json_out:
+        _emit_json({"contacts": contacts})
+        return
+    if not contacts:
+        console.print("[yellow]No contacts[/yellow]")
+        console.print("[dim]Add one with 'todo contact add <alias> <email>'[/dim]")
+        return
+    table = Table(title="👥 Contacts", show_header=True, header_style="bold blue")
+    table.add_column("Alias", style="cyan")
+    table.add_column("Emails", style="white")
+    for alias, emails in contacts.items():
+        table.add_row(alias, ", ".join(emails))
+    console.print(table)
+
+
+@contact_app.command("rm")
+@contact_app.command("delete")
+def contact_remove(
+    alias: str,
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Remove an alias and all its email mappings."""
+    _initialize_services()
+
+    removed = contact_repo.remove_alias(alias)
+    if json_out:
+        _emit_json({"alias": alias.lower(), "removed": removed})
+        return
+    if removed:
+        console.print(f"[green]✓ Removed {alias.lower()} ({removed} email(s))[/green]")
+    else:
+        console.print(f"[yellow]No contact alias '{alias.lower()}'[/yellow]")
+
+
+app.add_typer(contact_app, name="contact")
 
 
 @app.command("achievements")

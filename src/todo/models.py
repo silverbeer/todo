@@ -374,3 +374,53 @@ class StatsResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class EventStatus(str, Enum):
+    """Status of a calendar event."""
+
+    SCHEDULED = "scheduled"
+    CANCELLED = "cancelled"
+
+
+class Contact(BaseModel):
+    """A named contact alias mapped to an email address.
+
+    One row per (alias, email) so an alias like "kids" can map to several
+    emails. Resolution to a set of emails is done by the repository.
+    """
+
+    alias: str = Field(..., min_length=1, max_length=50)
+    email: str = Field(..., min_length=3, max_length=254)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Event(BaseModel):
+    """A calendar event, optionally synced to Google Calendar."""
+
+    id: int | None = None
+    uuid: str = Field(default_factory=lambda: str(uuid4()))
+    title: str = Field(..., min_length=1, max_length=500)
+    description: str | None = Field(None, max_length=2000)
+
+    start_at: datetime
+    end_at: datetime | None = None
+    all_day: bool = False
+    location: str | None = Field(None, max_length=500)
+
+    status: EventStatus = EventStatus.SCHEDULED
+
+    # Google Calendar sync (populated once pushed)
+    google_event_id: str | None = None
+    google_calendar_id: str | None = None
+
+    # Attendee emails — populated by DB queries, not a column on `events`.
+    attendees: list[str] = Field(default_factory=list)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @property
+    def is_synced(self) -> bool:
+        """Whether this event has been pushed to Google Calendar."""
+        return self.google_event_id is not None

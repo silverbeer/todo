@@ -1,10 +1,10 @@
 """Tests for natural-language due-date parsing."""
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
-from todo.core.dates import parse_due_date
+from todo.core.dates import parse_datetime, parse_due_date
 
 # Reference "today": Wednesday, 2026-06-10.
 TODAY = date(2026, 6, 10)
@@ -54,3 +54,18 @@ def test_explicit_year_not_rolled_forward():
 def test_defaults_to_real_today():
     # Smoke check that today=None path works (uses date.today()).
     assert isinstance(parse_due_date("today"), date)
+
+
+def test_parse_datetime_explicit():
+    now = datetime(2026, 6, 10, 15, 27, 45)
+    assert parse_datetime("2026-06-15 14:30", now) == datetime(2026, 6, 15, 14, 30)
+    # bare time inherits the date but zeroes unspecified minute/second
+    assert parse_datetime("7pm", now) == datetime(2026, 6, 10, 19, 0)
+    # explicitly given minute is respected
+    assert parse_datetime("9:30am", now) == datetime(2026, 6, 10, 9, 30)
+
+
+@pytest.mark.parametrize("expr", ["", "   ", "zzzznotadate"])
+def test_parse_datetime_invalid(expr):
+    with pytest.raises(ValueError):
+        parse_datetime(expr, datetime(2026, 6, 10))
