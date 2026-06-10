@@ -1223,6 +1223,31 @@ class EventRepository(BaseRepository[Event]):
         ).fetchall()
         return [r[0] for r in rows]
 
+    def set_google_ids(
+        self, event_id: int, google_event_id: str | None, calendar_id: str | None
+    ) -> None:
+        """Record (or clear) the Google Calendar sync identifiers for an event."""
+        conn = self.db.connect()
+        conn.execute(
+            "UPDATE events SET google_event_id = ?, google_calendar_id = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [google_event_id, calendar_id, event_id],
+        )
+
+    def get_unsynced(self) -> list[Event]:
+        """Scheduled events not yet pushed to Google (no google_event_id)."""
+        conn = self.db.connect()
+        cursor = conn.execute(
+            "SELECT * FROM events WHERE status = 'scheduled' "
+            "AND google_event_id IS NULL ORDER BY start_at ASC"
+        )
+        rows = cursor.fetchall()
+        cols = [d[0] for d in cursor.description]
+        events = [self._row_to_model(dict(zip(cols, r))) for r in rows]
+        for event in events:
+            event.attendees = self.get_attendees(event.id)
+        return events
+
 
 class ContactRepository(BaseRepository[Contact]):
     """Repository for contact-alias operations."""

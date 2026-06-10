@@ -51,11 +51,26 @@ class DatabaseConfig(BaseModel):
     )
 
 
+class CalendarConfig(BaseModel):
+    """Google Calendar sync configuration."""
+
+    credentials_path: str = Field(
+        default="~/.config/todo/gcal_credentials.json",
+        description="Path to the downloaded OAuth client credentials.json",
+    )
+    token_path: str = Field(
+        default="~/.config/todo/gcal_token.json",
+        description="Path where the OAuth token is stored after auth",
+    )
+    calendar_id: str = Field(default="primary", description="Target Google calendar id")
+
+
 class AppConfig(BaseModel):
     """Main application configuration."""
 
     ai: AIConfig = Field(default_factory=AIConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    calendar: CalendarConfig = Field(default_factory=CalendarConfig)
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
@@ -80,9 +95,18 @@ def get_app_config() -> AppConfig:
         database_path=os.getenv("TODO_DATABASE_PATH", "~/.local/share/todo/todos.db")
     )
 
+    calendar_config = CalendarConfig(
+        credentials_path=os.getenv(
+            "TODO_GCAL_CREDENTIALS", "~/.config/todo/gcal_credentials.json"
+        ),
+        token_path=os.getenv("TODO_GCAL_TOKEN", "~/.config/todo/gcal_token.json"),
+        calendar_id=os.getenv("TODO_GCAL_CALENDAR_ID", "primary"),
+    )
+
     return AppConfig(
         ai=ai_config,
         database=database_config,
+        calendar=calendar_config,
         debug=os.getenv("TODO_DEBUG", "false").lower() == "true",
         log_level=os.getenv("TODO_LOG_LEVEL", "INFO").upper(),
     )

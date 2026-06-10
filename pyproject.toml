@@ -30,6 +30,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "click>=8.1.7",  # Required by typer
     "python-dateutil>=2.9.0.post0",
+    "gcsa>=2.6.0",
 ]
 
 [project.optional-dependencies]
