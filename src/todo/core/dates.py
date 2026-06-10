@@ -128,3 +128,26 @@ def parse_due_date(text: str, today: date | None = None) -> date:
             parsed = parsed.replace(year=parsed.year + 1)
 
     return parsed
+
+
+def parse_datetime(text: str, now: datetime | None = None) -> datetime:
+    """Parse an explicit date/time string into a :class:`datetime`.
+
+    Used for the event ``--when`` flag (deterministic, no AI). Accepts most
+    formats dateutil understands (``2026-06-12 19:00``, ``june 12 7pm``,
+    ``7pm`` -> today at 19:00). Missing components default to ``now``.
+
+    Raises:
+        ValueError: If the string cannot be parsed.
+    """
+    if now is None:
+        now = datetime.now()
+    # Zero minute/second so an unspecified time ("7pm") doesn't inherit them
+    # from "now"; an explicitly given minute ("9:30") is still respected.
+    now = now.replace(minute=0, second=0, microsecond=0)
+    if not text or not text.strip():
+        raise ValueError("Empty date/time expression")
+    try:
+        return _dateutil_parser.parse(text.strip(), default=now)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"Could not parse date/time: {text!r}") from exc

@@ -2,7 +2,7 @@
 
 import json
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -994,3 +994,240 @@ class TestCLIDue:
         payload = json.loads(result.stdout.strip())
         assert "error" in payload
         mock_todo_repo.update_todo.assert_not_called()
+
+
+def _make_mock_event(event_id=1, title="Soccer", start=None, attendees=None):
+    """Build a Mock Event with the attributes the serializer reads."""
+    ev = Mock()
+    ev.id = event_id
+    ev.title = title
+    ev.description = None
+    ev.start_at = start or datetime(2026, 6, 13, 10, 0)
+    ev.end_at = None
+    ev.all_day = False
+    ev.location = None
+    ev.status = Mock()
+    ev.status.value = "scheduled"
+    ev.attendees = attendees or []
+    ev.google_event_id = None
+    ev.is_synced = False
+    ev.created_at = datetime(2026, 6, 10, 12, 0)
+    return ev
+
+
+class TestCLIEvents:
+    """Tests for the event sub-app."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.contact_repo")
+    def test_event_add_flag_mode(
+        self, mock_contacts, mock_events, mock_mig, mock_db, mock_config, runner
+    ):
+        """event add --no-ai --when creates an event from flags."""
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.resolve.return_value = []
+        ev = _make_mock_event()
+        mock_events.create_event.return_value = ev
+        mock_events.get_attendees.return_value = []
+
+        result = runner.invoke(
+            app,
+            [
+                "event",
+                "add",
+                "Soccer",
+                "--when",
+                "2026-06-13 10:00",
+                "--no-ai",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["title"] == "Soccer"
+        assert payload["start_at"].startswith("2026-06-13 10:00")
+        # parsed start passed to create_event
+        assert mock_events.create_event.call_args.args[1] == datetime(
+            2026, 6, 13, 10, 0
+        )
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    def test_event_add_flag_requires_when(
+        self, mock_events, mock_mig, mock_db, mock_config, runner
+    ):
+        """--no-ai without --when errors and creates nothing."""
+        mock_mig.is_schema_initialized.return_value = True
+
+        result = runner.invoke(app, ["event", "add", "Soccer", "--no-ai", "--json"])
+
+        assert result.exit_code == 0
+        assert "error" in json.loads(result.stdout.strip())
+        mock_events.create_event.assert_not_called()
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.contact_repo")
+    @patch("todo.cli.main.event_parser")
+    @patch("todo.cli.main.asyncio.run")
+    def test_event_add_ai_resolves_date(
+        self,
+        mock_run,
+        mock_parser,
+        mock_contacts,
+        mock_events,
+        mock_mig,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        """AI mode resolves the date phrase deterministically (not via the model)."""
+        from todo.ai.event_parser import EventDraft
+
+        mock_mig.is_schema_initialized.return_value = True
+        mock_run.return_value = EventDraft(
+            title="Dinner",
+            date_phrase="friday",
+            time="7pm",
+            attendees=["wife"],
+        )
+        mock_contacts.resolve.return_value = ["jane@example.com"]
+        mock_events.create_event.return_value = _make_mock_event(
+            title="Dinner",
+            start=datetime(2026, 6, 12, 19, 0),
+            attendees=["jane@example.com"],
+        )
+
+        result = runner.invoke(
+            app, ["event", "add", "dinner friday 7pm with wife", "--json"]
+        )
+
+        assert result.exit_code == 0
+        # create_event got a real datetime; the date came from core.dates, not the model
+        start_arg = mock_events.create_event.call_args.args[1]
+        assert isinstance(start_arg, datetime)
+        assert start_arg.hour == 19
+        mock_events.set_attendees.assert_called_once()
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    def test_event_list_json(self, mock_events, mock_mig, mock_db, mock_config, runner):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_events.list_events.return_value = [_make_mock_event()]
+
+        result = runner.invoke(app, ["event", "ls", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["events"][0]["title"] == "Soccer"
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    def test_event_show_not_found(
+        self, mock_events, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_events.get_by_id.return_value = None
+
+        result = runner.invoke(app, ["event", "show", "99", "--json"])
+
+        assert result.exit_code == 0
+        assert "error" in json.loads(result.stdout.strip())
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    def test_event_delete_requires_force_in_json(
+        self, mock_events, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+
+        result = runner.invoke(app, ["event", "delete", "1", "--json"])
+
+        assert result.exit_code == 0
+        assert "error" in json.loads(result.stdout.strip())
+        mock_events.delete_event.assert_not_called()
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    def test_event_cancel_json(
+        self, mock_events, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        ev = _make_mock_event()
+        ev.status.value = "cancelled"
+        mock_events.cancel_event.return_value = ev
+
+        result = runner.invoke(app, ["event", "cancel", "1", "--json"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.stdout.strip())["status"] == "cancelled"
+
+
+class TestCLIContacts:
+    """Tests for the contact sub-app."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.contact_repo")
+    def test_contact_add_json(
+        self, mock_contacts, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.get_emails.return_value = ["a@x.com", "b@x.com"]
+
+        result = runner.invoke(
+            app, ["contact", "add", "kids", "a@x.com", "b@x.com", "--json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["alias"] == "kids"
+        assert payload["emails"] == ["a@x.com", "b@x.com"]
+        assert mock_contacts.add_contact.call_count == 2
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.contact_repo")
+    def test_contact_list_json(
+        self, mock_contacts, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.list_contacts.return_value = {"wife": ["jane@x.com"]}
+
+        result = runner.invoke(app, ["contact", "ls", "--json"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.stdout.strip())["contacts"] == {"wife": ["jane@x.com"]}
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.contact_repo")
+    def test_contact_rm_json(
+        self, mock_contacts, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.remove_alias.return_value = 2
+
+        result = runner.invoke(app, ["contact", "rm", "kids", "--json"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.stdout.strip())["removed"] == 2
