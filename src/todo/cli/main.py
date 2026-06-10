@@ -63,6 +63,10 @@ def _initialize_services():
             )
             migration_manager.run_migrations()
 
+        # Ensure newer columns exist even on databases initialized before they
+        # were added. Idempotent.
+        migration_manager.ensure_completion_note()
+
         todo_repo = TodoRepository(db)
         ai_repo = AIEnrichmentRepository(db)
         enrichment_service = EnrichmentService(db)
@@ -134,6 +138,7 @@ def _todo_to_dict(todo: Any, ai_enrichment: Any = None) -> dict[str, Any]:
         "is_overdue": todo.is_overdue,
         "created_at": todo.created_at,
         "completed_at": todo.completed_at,
+        "completion_note": todo.completion_note,
         "ai_enriched": ai_enrichment is not None,
     }
 
@@ -454,6 +459,9 @@ def complete_todo(
     todo_ids: list[int] = typer.Argument(
         ..., help="One or more todo IDs to mark as completed"
     ),
+    note: str | None = typer.Option(
+        None, "--note", "-n", help="Completion note (applied to each todo)"
+    ),
     json_out: bool = typer.Option(
         False, "--json", "-j", help="Emit result as JSON (machine-readable)"
     ),
@@ -479,7 +487,7 @@ def complete_todo(
 
     for todo_id in todo_ids:
         try:
-            todo = todo_repo.complete_todo(todo_id)
+            todo = todo_repo.complete_todo(todo_id, note=note)
 
             if todo:
                 completed_count += 1
@@ -784,6 +792,9 @@ def show_todo(
 
     if todo.completed_at:
         info_table.add_row("Completed", todo.completed_at.strftime("%Y-%m-%d %H:%M"))
+
+    if todo.completion_note:
+        info_table.add_row("Note", todo.completion_note)
 
     if todo.total_points_earned:
         info_table.add_row("Points", str(todo.total_points_earned))
