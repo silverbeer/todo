@@ -1,6 +1,7 @@
 """Main CLI application entry point."""
 
 import asyncio
+import contextlib
 import json
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time
@@ -23,6 +24,7 @@ from ..db.repository import (
     EventRepository,
     TodoRepository,
 )
+from ..gcal.client import CalendarAuthError, GoogleCalendarClient
 from ..models import AIProvider
 
 console = Console()
@@ -46,6 +48,7 @@ background_service = None
 event_repo = None
 contact_repo = None
 event_parser = None
+gcal_client = None
 
 
 def _initialize_services():
@@ -60,7 +63,8 @@ def _initialize_services():
         background_service, \
         event_repo, \
         contact_repo, \
-        event_parser
+        event_parser, \
+        gcal_client
 
     if db is not None:
         return  # Already initialized
@@ -89,6 +93,7 @@ def _initialize_services():
         event_repo = EventRepository(db)
         contact_repo = ContactRepository(db)
         event_parser = EventParser()
+        gcal_client = GoogleCalendarClient(config.calendar)
     except RuntimeError as e:
         # Handle database lock errors gracefully
         console.print(f"[red]✗ Database Error:[/red] {e}")
@@ -177,6 +182,31 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
         "is_synced": event.is_synced,
         "created_at": event.created_at,
     }
+
+
+def _push_event_to_google(event: Any) -> str | None:
+    """Push an event to Google Calendar and persist its id.
+
+    Returns None on success, or an error message string on failure.
+    """
+    try:
+        gid = gcal_client.push_event(event)
+    except CalendarAuthError as e:
+        return str(e)
+    except Exception as e:  # noqa: BLE001 - report any push failure to the user
+        return f"Google Calendar push failed: {e}"
+    event_repo.set_google_ids(event.id, gid, gcal_client.calendar_id)
+    event.google_event_id = gid
+    event.google_calendar_id = gcal_client.calendar_id
+    return None
+
+
+def _remove_event_from_google(google_event_id: str | None) -> None:
+    """Best-effort delete of a Google Calendar event; ignores failures."""
+    if not google_event_id:
+        return
+    with contextlib.suppress(Exception):  # removal is best-effort
+        gcal_client.delete_event(google_event_id)
 
 
 @app.command("version")
@@ -1457,6 +1487,9 @@ def event_add(
         None, "--invite", "-i", help="Comma-separated aliases/emails to invite"
     ),
     no_ai: bool = typer.Option(False, "--no-ai", help="Skip AI parsing; use flags"),
+    no_sync: bool = typer.Option(
+        False, "--no-sync", help="Don't push to Google Calendar"
+    ),
     json_out: bool = typer.Option(
         False, "--json", "-j", help="Emit result as JSON (machine-readable)"
     ),
@@ -1542,6 +1575,15 @@ def event_add(
         event_repo.set_attendees(event.id, emails)
         event.attendees = emails
 
+    # Push to Google Calendar (best-effort) unless --no-sync.
+    sync_error = None
+    if no_sync:
+        sync_error = "skipped"
+    elif not gcal_client.is_authenticated():
+        sync_error = "not-authenticated"
+    else:
+        sync_error = _push_event_to_google(event)
+
     if json_out:
         _emit_json(_event_to_dict(event))
         return
@@ -1554,7 +1596,14 @@ def event_add(
         console.print(f"[dim]Where: {event.location}[/dim]")
     if emails:
         console.print(f"[dim]Invitees: {', '.join(emails)}[/dim]")
-    console.print("[dim]Local only — Google Calendar sync lands in Phase 2.[/dim]")
+    if event.is_synced:
+        console.print("[dim]✓ Synced to Google Calendar[/dim]")
+    elif sync_error == "not-authenticated":
+        console.print(
+            "[dim]Local only — run 'todo calendar auth' to sync to Google.[/dim]"
+        )
+    elif sync_error and sync_error != "skipped":
+        console.print(f"[yellow]⚠ Not synced: {sync_error}[/yellow]")
 
 
 @event_app.command("ls")
@@ -1675,6 +1724,13 @@ def event_cancel(
         )
         return
 
+    # Remove from Google Calendar if it was synced.
+    if event.google_event_id:
+        _remove_event_from_google(event.google_event_id)
+        event_repo.set_google_ids(event_id, None, None)
+        event.google_event_id = None
+        event.google_calendar_id = None
+
     if json_out:
         _emit_json(_event_to_dict(event))
         return
@@ -1700,7 +1756,10 @@ def event_delete(
             console.print("[yellow]Aborted[/yellow]")
             return
 
+    existing = event_repo.get_by_id(event_id)
     deleted = event_repo.delete_event(event_id)
+    if deleted and existing and existing.google_event_id:
+        _remove_event_from_google(existing.google_event_id)
     if json_out:
         _emit_json({"deleted": event_id if deleted else None, "found": deleted})
         return
@@ -1710,7 +1769,131 @@ def event_delete(
         out.print(f"[red]✗ Event {event_id} not found[/red]")
 
 
+@event_app.command("sync")
+def event_sync(
+    event_id: int | None = typer.Argument(
+        None, help="Sync one event; omit to sync all unsynced"
+    ),
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Push unsynced events to Google Calendar."""
+    _initialize_services()
+    out = console_err if json_out else console
+
+    if not gcal_client.is_authenticated():
+        _emit_error(out, json_out, "Not authenticated — run 'todo calendar auth' first")
+        return
+
+    if event_id is not None:
+        ev = event_repo.get_by_id(event_id)
+        if not ev:
+            _emit_error(out, json_out, f"Event {event_id} not found")
+            return
+        targets = [ev]
+    else:
+        targets = event_repo.get_unsynced()
+
+    synced: list[int] = []
+    failed: list[int] = []
+    for ev in targets:
+        if ev.is_synced:
+            continue
+        err = _push_event_to_google(ev)
+        if err:
+            failed.append(ev.id)
+            if not json_out:
+                out.print(f"[yellow]⚠ {ev.id}: {err}[/yellow]")
+        else:
+            synced.append(ev.id)
+
+    if json_out:
+        _emit_json({"synced": synced, "failed": failed})
+        return
+    console.print(f"[green]✓ Synced {len(synced)} event(s)[/green]")
+    if failed:
+        console.print(f"[red]✗ {len(failed)} failed[/red]")
+
+
 app.add_typer(event_app, name="event")
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar
+# ---------------------------------------------------------------------------
+calendar_app = typer.Typer(help="Google Calendar integration")
+
+
+@calendar_app.command("auth")
+def calendar_auth(
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Don't open a browser (print the URL instead)"
+    ),
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Authenticate with Google Calendar (one-time OAuth).
+
+    Prerequisite: a Google Cloud OAuth client. Create a project, enable the
+    Google Calendar API, create an OAuth client (Desktop app), download
+    credentials.json, and save it to ~/.config/todo/gcal_credentials.json.
+    """
+    _initialize_services()
+    out = console_err if json_out else console
+
+    if not gcal_client.has_credentials():
+        _emit_error(
+            out,
+            json_out,
+            f"No OAuth credentials at {gcal_client.credentials_path}. Save your "
+            "downloaded credentials.json there, then re-run.",
+        )
+        return
+
+    try:
+        gcal_client.authenticate(open_browser=not no_browser)
+    except CalendarAuthError as e:
+        _emit_error(out, json_out, str(e))
+        return
+
+    if json_out:
+        _emit_json(
+            {
+                "authenticated": True,
+                "token_path": str(gcal_client.token_path),
+                "calendar_id": gcal_client.calendar_id,
+            }
+        )
+        return
+    console.print("[green]✓ Authenticated with Google Calendar[/green]")
+    console.print(f"[dim]Token saved to {gcal_client.token_path}[/dim]")
+
+
+@calendar_app.command("status")
+def calendar_status(
+    json_out: bool = typer.Option(False, "--json", "-j"),
+) -> None:
+    """Show Google Calendar auth status."""
+    _initialize_services()
+
+    status = {
+        "has_credentials": gcal_client.has_credentials(),
+        "authenticated": gcal_client.is_authenticated(),
+        "credentials_path": str(gcal_client.credentials_path),
+        "token_path": str(gcal_client.token_path),
+        "calendar_id": gcal_client.calendar_id,
+    }
+    if json_out:
+        _emit_json(status)
+        return
+    creds = "✓" if status["has_credentials"] else "✗ missing"
+    console.print(f"Credentials: {creds} ({status['credentials_path']})")
+    console.print(
+        "Authenticated: "
+        + ("✓" if status["authenticated"] else "✗ — run: todo calendar auth")
+    )
+    console.print(f"Calendar: {status['calendar_id']}")
+
+
+app.add_typer(calendar_app, name="calendar")
 
 
 # ---------------------------------------------------------------------------

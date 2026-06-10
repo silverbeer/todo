@@ -1261,3 +1261,162 @@ class TestCLIDoneNote:
         mock_todo_repo.complete_todo.assert_called_once_with(
             1, note="paid via portal #8891"
         )
+
+
+class TestCLICalendar:
+    """Tests for the calendar sub-app and event sync."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.gcal_client")
+    def test_calendar_status_json(
+        self, mock_gcal, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_gcal.has_credentials.return_value = False
+        mock_gcal.is_authenticated.return_value = False
+        mock_gcal.credentials_path = "/x/creds.json"
+        mock_gcal.token_path = "/x/token.json"
+        mock_gcal.calendar_id = "primary"
+
+        result = runner.invoke(app, ["calendar", "status", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["has_credentials"] is False
+        assert payload["authenticated"] is False
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.gcal_client")
+    def test_calendar_auth_without_credentials(
+        self, mock_gcal, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_gcal.has_credentials.return_value = False
+        mock_gcal.credentials_path = "/x/creds.json"
+
+        result = runner.invoke(app, ["calendar", "auth", "--json"])
+
+        assert result.exit_code == 0
+        assert "error" in json.loads(result.stdout.strip())
+        mock_gcal.authenticate.assert_not_called()
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.gcal_client")
+    def test_event_sync_not_authenticated(
+        self, mock_gcal, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_gcal.is_authenticated.return_value = False
+
+        result = runner.invoke(app, ["event", "sync", "--json"])
+
+        assert result.exit_code == 0
+        assert "error" in json.loads(result.stdout.strip())
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.gcal_client")
+    def test_event_sync_pushes_unsynced(
+        self, mock_gcal, mock_events, mock_mig, mock_db, mock_config, runner
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_gcal.is_authenticated.return_value = True
+        mock_gcal.calendar_id = "primary"
+        mock_gcal.push_event.return_value = "g_1"
+        ev = _make_mock_event()
+        ev.is_synced = False
+        mock_events.get_unsynced.return_value = [ev]
+
+        result = runner.invoke(app, ["event", "sync", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["synced"] == [1]
+        assert payload["failed"] == []
+        mock_events.set_google_ids.assert_called_once_with(1, "g_1", "primary")
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.contact_repo")
+    @patch("todo.cli.main.gcal_client")
+    def test_event_add_pushes_when_authed(
+        self,
+        mock_gcal,
+        mock_contacts,
+        mock_events,
+        mock_mig,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.resolve.return_value = []
+        mock_gcal.is_authenticated.return_value = True
+        mock_gcal.calendar_id = "primary"
+        mock_gcal.push_event.return_value = "g_99"
+        mock_events.create_event.return_value = _make_mock_event()
+
+        result = runner.invoke(
+            app,
+            [
+                "event",
+                "add",
+                "Soccer",
+                "--when",
+                "2026-06-13 10:00",
+                "--no-ai",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_gcal.push_event.assert_called_once()
+        mock_events.set_google_ids.assert_called_once_with(1, "g_99", "primary")
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.event_repo")
+    @patch("todo.cli.main.contact_repo")
+    @patch("todo.cli.main.gcal_client")
+    def test_event_add_no_sync_skips_push(
+        self,
+        mock_gcal,
+        mock_contacts,
+        mock_events,
+        mock_mig,
+        mock_db,
+        mock_config,
+        runner,
+    ):
+        mock_mig.is_schema_initialized.return_value = True
+        mock_contacts.resolve.return_value = []
+        mock_gcal.is_authenticated.return_value = True
+        mock_events.create_event.return_value = _make_mock_event()
+
+        result = runner.invoke(
+            app,
+            [
+                "event",
+                "add",
+                "Soccer",
+                "--when",
+                "2026-06-13 10:00",
+                "--no-ai",
+                "--no-sync",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_gcal.push_event.assert_not_called()
