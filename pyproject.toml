@@ -29,6 +29,7 @@ dependencies = [
     "anthropic>=0.34.0",
     "python-dotenv>=1.0.0",
     "click>=8.1.7",  # Required by typer
+    "python-dateutil>=2.9.0.post0",
 ]
 
 [project.optional-dependencies]
@@ -163,5 +164,6 @@ dev = [
     "pytest-cov>=6.2.1",
     "pytest-mock>=3.14.1",
     "ruff>=0.12.11",
+    "types-python-dateutil>=2.9.0.20260518",
     "types-requests>=2.32.4.20250809",
 ]

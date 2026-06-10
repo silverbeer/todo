@@ -395,6 +395,35 @@ class TodoRepository(BaseRepository[Todo]):
                     f"Database error while completing todo {todo_id}: {str(e)}"
                 ) from e
 
+    def delete_todo(self, todo_id: int) -> bool:
+        """Permanently delete a todo and its dependent records.
+
+        Removes child ai_enrichments (NOT NULL FK to todos) and detaches any
+        recurring child instances that point back at this todo via
+        parent_todo_id, so the foreign keys do not block the delete.
+
+        Args:
+            todo_id: ID of the todo to delete.
+
+        Returns:
+            True if the todo was deleted, False if it did not exist.
+        """
+        conn = self.db.connect()
+
+        if self.get_by_id(todo_id) is None:
+            return False
+
+        # Remove dependent AI enrichments (hard FK to todos).
+        conn.execute("DELETE FROM ai_enrichments WHERE todo_id = ?", [todo_id])
+        # Detach recurring child instances that reference this todo.
+        conn.execute(
+            "UPDATE todos SET parent_todo_id = NULL WHERE parent_todo_id = ?",
+            [todo_id],
+        )
+        conn.execute("DELETE FROM todos WHERE id = ?", [todo_id])
+
+        return self.get_by_id(todo_id) is None
+
     def update_todo(self, todo_id: int, updates: dict[str, Any]) -> Todo | None:
         """Update a todo with given field values.
 

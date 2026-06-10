@@ -1,6 +1,7 @@
 """Main CLI application entry point."""
 
 import asyncio
+import json
 from typing import Any
 
 import typer
@@ -10,12 +11,15 @@ from rich.table import Table
 from ..ai.background import BackgroundEnrichmentService
 from ..ai.enrichment_service import EnrichmentService
 from ..core.config import get_app_config
+from ..core.dates import parse_due_date
 from ..db.connection import DatabaseConnection
 from ..db.migrations import MigrationManager
 from ..db.repository import AIEnrichmentRepository, TodoRepository
 from ..models import AIProvider
 
 console = Console()
+# Status/warning output in --json mode goes here so stdout stays pure JSON.
+console_err = Console(stderr=True)
 app = typer.Typer(
     name="todo",
     help="AI-powered terminal todo application for developers",
@@ -85,6 +89,55 @@ def _initialize_services():
         sys.exit(1)
 
 
+def _enum_val(value: Any) -> Any:
+    """Return .value for enums, otherwise the value unchanged."""
+    return value.value if hasattr(value, "value") else value
+
+
+def _emit_json(payload: Any) -> None:
+    """Print a JSON payload to stdout (datetimes serialized via str)."""
+    print(json.dumps(payload, default=str))
+
+
+def _enrichment_to_dict(enrichment: Any) -> dict[str, Any] | None:
+    """Serialize an AI enrichment record to a plain dict."""
+    if not enrichment:
+        return None
+    return {
+        "category": enrichment.suggested_category,
+        "priority": _enum_val(enrichment.suggested_priority),
+        "size": _enum_val(enrichment.suggested_size),
+        "estimated_duration_minutes": enrichment.estimated_duration_minutes,
+        "confidence": enrichment.confidence_score,
+        "reasoning": enrichment.reasoning,
+    }
+
+
+def _todo_to_dict(todo: Any, ai_enrichment: Any = None) -> dict[str, Any]:
+    """Serialize a Todo (optionally with AI enrichment) to a plain dict."""
+    if todo.category_id and todo.category:
+        category = getattr(todo.category, "name", str(todo.category))
+    elif ai_enrichment and ai_enrichment.suggested_category:
+        category = ai_enrichment.suggested_category
+    else:
+        category = None
+    return {
+        "id": todo.id,
+        "title": todo.title,
+        "description": todo.description,
+        "status": _enum_val(todo.status),
+        "priority": _enum_val(todo.final_priority),
+        "size": _enum_val(todo.final_size),
+        "category": category,
+        "points_earned": todo.total_points_earned,
+        "due_date": todo.due_date,
+        "is_overdue": todo.is_overdue,
+        "created_at": todo.created_at,
+        "completed_at": todo.completed_at,
+        "ai_enriched": ai_enrichment is not None,
+    }
+
+
 @app.command("version")
 def version() -> None:
     """Show application version."""
@@ -101,38 +154,74 @@ def add_todo(
     provider: str | None = typer.Option(
         None, "--provider", "-p", help="AI provider (openai/anthropic)"
     ),
+    due: str | None = typer.Option(
+        None,
+        "--due",
+        "-D",
+        help="Due date, e.g. 'today', 'EOW', 'next monday', '6/11'",
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit result as JSON (machine-readable)"
+    ),
 ) -> None:
     """Add a new todo task with optional AI enrichment."""
     _initialize_services()
 
+    # In JSON mode, status/errors go to stderr so stdout stays pure JSON.
+    out = console_err if json_out else console
+
     # Validate input
     if not task or not task.strip():
-        console.print("[red]✗ Task title cannot be empty[/red]")
+        out.print("[red]✗ Task title cannot be empty[/red]")
+        if json_out:
+            _emit_json({"error": "Task title cannot be empty"})
         return
+
+    # Parse the due date up front so a bad value fails before we create anything.
+    due_date = None
+    if due:
+        try:
+            due_date = parse_due_date(due)
+        except ValueError as e:
+            out.print(f"[red]✗ {e}[/red]")
+            if json_out:
+                _emit_json({"error": str(e)})
+            return
 
     # Create the basic todo
     try:
         todo = todo_repo.create_todo(task.strip(), description)
-        console.print(f"[green]✓ Added task:[/green] {task.strip()}")
-        console.print(f"[dim]Task ID: {todo.id}[/dim]")
+        if due_date:
+            todo_repo.update_todo(todo.id, {"due_date": due_date})
+        if not json_out:
+            console.print(f"[green]✓ Added task:[/green] {task.strip()}")
+            console.print(f"[dim]Task ID: {todo.id}[/dim]")
+            if due_date:
+                console.print(f"[dim]Due: {due_date.isoformat()}[/dim]")
     except Exception as e:
         error_msg = str(e)
         if "string_too_short" in error_msg or "at least 1 character" in error_msg:
-            console.print("[red]✗ Task title cannot be empty[/red]")
+            error_msg = "Task title cannot be empty"
+            out.print("[red]✗ Task title cannot be empty[/red]")
         else:
-            console.print(f"[red]✗ Error creating task: {error_msg}[/red]")
+            out.print(f"[red]✗ Error creating task: {error_msg}[/red]")
+        if json_out:
+            _emit_json({"error": error_msg})
         return
 
     # AI enrichment
+    enrichment = None
     if not no_ai and config.ai.enable_auto_enrichment:
-        console.print("\n[blue]🤖 AI analyzing task...[/blue]")
+        out.print("\n[blue]🤖 AI analyzing task...[/blue]")
 
         ai_provider = None
         if provider:
             try:
                 ai_provider = AIProvider(provider)
             except ValueError:
-                console.print(f"[red]Invalid provider: {provider}[/red]")
+                out.print(f"[red]Invalid provider: {provider}[/red]")
+                if json_out:
+                    _emit_json({"error": f"Invalid provider: {provider}"})
                 return
 
         # Get AI enrichment
@@ -141,23 +230,31 @@ def add_todo(
         )
 
         if enrichment:
-            _display_enrichment_results(enrichment)
-
             # Auto-apply high confidence suggestions
             if enrichment.confidence_score >= config.ai.confidence_threshold:
                 _apply_enrichment(todo.id, enrichment)
-                console.print(
-                    "[green]✓ High confidence suggestions applied automatically[/green]"
-                )
-            else:
+                if not json_out:
+                    _display_enrichment_results(enrichment)
+                    console.print(
+                        "[green]✓ High confidence suggestions applied automatically[/green]"
+                    )
+            elif not json_out:
+                _display_enrichment_results(enrichment)
                 console.print(
                     f"[yellow]⚠ Suggestions available (confidence: {enrichment.confidence_score:.1%})[/yellow]"
                 )
                 console.print(
                     "[dim]Use 'todo show <id>' to review and apply suggestions[/dim]"
                 )
-        else:
+        elif not json_out:
             console.print("[red]✗ AI enrichment failed[/red]")
+
+    if json_out:
+        # Re-fetch so applied enrichment is reflected in the payload.
+        todo = todo_repo.get_by_id(todo.id) or todo
+        payload = _todo_to_dict(todo, enrichment)
+        payload["enrichment"] = _enrichment_to_dict(enrichment)
+        _emit_json(payload)
 
 
 async def _enrich_todo_async(
@@ -241,6 +338,9 @@ def list_todos(
     all_todos: bool = typer.Option(
         False, "--all", "-a", help="Show all todos including completed"
     ),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit todos as JSON (machine-readable)"
+    ),
 ) -> None:
     """List active todos with AI enrichment status."""
     _initialize_services()
@@ -253,6 +353,9 @@ def list_todos(
             todos = todo_repo.get_active_todos(limit)
     except Exception as e:
         error_msg = str(e)
+        if json_out:
+            _emit_json({"error": error_msg, "todos": []})
+            return
         if "string_too_short" in error_msg or "at least 1 character" in error_msg:
             console.print(
                 "[red]✗ Found invalid todos with empty titles in database[/red]"
@@ -262,6 +365,17 @@ def list_todos(
             )
         else:
             console.print(f"[red]✗ Error retrieving todos: {error_msg}[/red]")
+        return
+
+    if json_out:
+        _emit_json(
+            {
+                "todos": [
+                    _todo_to_dict(todo, ai_repo.get_latest_by_todo_id(todo.id))
+                    for todo in todos
+                ]
+            }
+        )
         return
 
     if not todos:
@@ -276,6 +390,7 @@ def list_todos(
     table.add_column("Category", style="blue", width=10)
     table.add_column("Status", style="green")
     table.add_column("Priority", style="yellow")
+    table.add_column("Due", style="cyan", width=10)
     table.add_column("AI", style="magenta", width=3)
 
     for todo in todos:
@@ -312,12 +427,21 @@ def list_todos(
         )
         status_text = f"{status_icon} {status_value.title()}"
 
+        # Format due date (red when overdue)
+        if todo.due_date:
+            due_text = todo.due_date.isoformat()
+            if todo.is_overdue:
+                due_text = f"[red]{due_text}[/red]"
+        else:
+            due_text = "—"
+
         table.add_row(
             str(todo.id),
             todo.title[:60] + "..." if len(todo.title) > 60 else todo.title,
             category[:10],  # Truncate category to fit column width
             status_text,
             priority,
+            due_text,
             ai_status,
         )
 
@@ -330,6 +454,9 @@ def complete_todo(
     todo_ids: list[int] = typer.Argument(
         ..., help="One or more todo IDs to mark as completed"
     ),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit result as JSON (machine-readable)"
+    ),
 ) -> None:
     """Mark one or more todos as completed.
 
@@ -340,10 +467,15 @@ def complete_todo(
     """
     _initialize_services()
 
+    # In JSON mode, human-readable progress goes to stderr; JSON to stdout.
+    out = console_err if json_out else console
+
     completed_count = 0
     failed_count = 0
     total_points = 0
     all_achievements = []
+    completed_ids: list[int] = []
+    failed_ids: list[int] = []
 
     for todo_id in todo_ids:
         try:
@@ -351,7 +483,8 @@ def complete_todo(
 
             if todo:
                 completed_count += 1
-                console.print(f"[green]✓ Completed:[/green] {todo.title}")
+                completed_ids.append(todo_id)
+                out.print(f"[green]✓ Completed:[/green] {todo.title}")
 
                 # Display gamification results
                 if hasattr(todo, "scoring_result") and todo.scoring_result:
@@ -360,12 +493,12 @@ def complete_todo(
 
                     # Points breakdown (show for each todo)
                     if scoring["bonus_points"] > 0:
-                        console.print(
+                        out.print(
                             f"[yellow]  🎉 Earned {scoring['total_points']} points! "
                             f"({scoring['base_points']} base + {scoring['bonus_points']} bonus)[/yellow]"
                         )
                     else:
-                        console.print(
+                        out.print(
                             f"[yellow]  🎉 Earned {scoring['total_points']} points![/yellow]"
                         )
 
@@ -376,56 +509,50 @@ def complete_todo(
                 elif todo.total_points_earned:
                     # Fallback for basic points display
                     total_points += todo.total_points_earned
-                    console.print(
+                    out.print(
                         f"[yellow]  🎉 Earned {todo.total_points_earned} points![/yellow]"
                     )
             else:
                 failed_count += 1
-                console.print(
-                    f"[red]✗ Todo {todo_id} not found or already completed[/red]"
-                )
+                failed_ids.append(todo_id)
+                out.print(f"[red]✗ Todo {todo_id} not found or already completed[/red]")
         except Exception as e:
             failed_count += 1
+            failed_ids.append(todo_id)
             error_msg = str(e)
             if "foreign key constraint" in error_msg.lower():
-                console.print(
+                out.print(
                     f"[red]✗ Cannot complete todo {todo_id}: This todo has related data that must be cleaned up first[/red]"
                 )
             elif "not found" in error_msg.lower():
-                console.print(f"[red]✗ Todo {todo_id} not found[/red]")
+                out.print(f"[red]✗ Todo {todo_id} not found[/red]")
             else:
-                console.print(
-                    f"[red]✗ Error completing todo {todo_id}: {error_msg}[/red]"
-                )
+                out.print(f"[red]✗ Error completing todo {todo_id}: {error_msg}[/red]")
 
     # Summary for multiple todos
     if len(todo_ids) > 1:
-        console.print()
+        out.print()
         if completed_count > 0:
-            console.print(
-                f"[green]📊 Summary: {completed_count} todos completed[/green]"
-            )
+            out.print(f"[green]📊 Summary: {completed_count} todos completed[/green]")
             if total_points > 0:
-                console.print(
-                    f"[yellow]🎯 Total points earned: {total_points}[/yellow]"
-                )
+                out.print(f"[yellow]🎯 Total points earned: {total_points}[/yellow]")
 
             # Show unique achievements unlocked
             if all_achievements:
                 unique_achievements = {a.name: a for a in all_achievements}
-                console.print(
+                out.print(
                     f"[bold magenta]🏆 Achievements unlocked: {len(unique_achievements)}[/bold magenta]"
                 )
                 for achievement in unique_achievements.values():
-                    console.print(
+                    out.print(
                         f"[bold magenta]  • {achievement.icon} {achievement.name}[/bold magenta]"
                     )
-                    console.print(
+                    out.print(
                         f"[dim]    {achievement.description} (+{achievement.bonus_points} bonus points)[/dim]"
                     )
 
         if failed_count > 0:
-            console.print(
+            out.print(
                 f"[red]❌ Failed: {failed_count} todos could not be completed[/red]"
             )
 
@@ -439,27 +566,180 @@ def complete_todo(
             progress = scoring_service.get_user_progress()
 
             if progress["current_streak"] > 1:
-                console.print(
+                out.print(
                     f"[blue]🔥 Current streak: {progress['current_streak']} days[/blue]"
                 )
 
             # Check if we leveled up (simplified check)
             if total_points > 0:  # Only show if we earned points
-                console.print(
+                out.print(
                     f"[cyan]⭐ Current level: {progress['level']} ({progress['points_to_next_level']} points to next level)[/cyan]"
                 )
         except Exception:
             # Don't fail the whole command if we can't get progress info
             pass
 
+    if json_out:
+        unique_achievements = {a.name: a for a in all_achievements}
+        _emit_json(
+            {
+                "completed": completed_ids,
+                "failed": failed_ids,
+                "points_earned": total_points,
+                "achievements": [
+                    {
+                        "name": a.name,
+                        "icon": a.icon,
+                        "description": a.description,
+                        "bonus_points": a.bonus_points,
+                    }
+                    for a in unique_achievements.values()
+                ],
+            }
+        )
+
+
+@app.command("delete")
+@app.command("rm")
+def delete_todo_cmd(
+    todo_ids: list[int] = typer.Argument(..., help="One or more todo IDs to delete"),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip the confirmation prompt"
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit result as JSON (machine-readable)"
+    ),
+) -> None:
+    """Permanently delete one or more todos and their AI enrichment.
+
+    Unlike 'done', this removes the todo entirely and awards no points.
+    This cannot be undone.
+
+    Examples:
+        todo delete 42            # Delete a single todo (asks to confirm)
+        todo rm 10 11 12 --force  # Delete several without confirming
+    """
+    _initialize_services()
+
+    out = console_err if json_out else console
+
+    # Deletion is irreversible. Require confirmation, or --force. JSON mode
+    # cannot prompt, so it must pass --force explicitly.
+    if not force:
+        if json_out:
+            _emit_json({"error": "Refusing to delete without --force in --json mode"})
+            return
+        plural = "s" if len(todo_ids) > 1 else ""
+        if not typer.confirm(
+            f"Permanently delete {len(todo_ids)} todo{plural}? This cannot be undone."
+        ):
+            console.print("[yellow]Aborted[/yellow]")
+            return
+
+    deleted: list[int] = []
+    failed: list[int] = []
+    for todo_id in todo_ids:
+        try:
+            if todo_repo.delete_todo(todo_id):
+                deleted.append(todo_id)
+                out.print(f"[green]🗑  Deleted todo {todo_id}[/green]")
+            else:
+                failed.append(todo_id)
+                out.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        except Exception as e:
+            failed.append(todo_id)
+            out.print(f"[red]✗ Error deleting todo {todo_id}: {e}[/red]")
+
+    if json_out:
+        _emit_json({"deleted": deleted, "failed": failed})
+
+
+@app.command("due")
+def set_due(
+    todo_id: int,
+    when: str | None = typer.Argument(
+        None, help="Due date, e.g. 'today', 'EOW', 'next monday', '6/11'"
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Clear the due date"),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit result as JSON (machine-readable)"
+    ),
+) -> None:
+    """Set or change a todo's due date.
+
+    Examples:
+        todo due 42 today
+        todo due 42 "next monday"
+        todo due 42 07/04/2026
+        todo due 42 --clear        # remove the due date
+    """
+    _initialize_services()
+
+    out = console_err if json_out else console
+
+    todo = todo_repo.get_by_id(todo_id)
+    if not todo:
+        if json_out:
+            _emit_json({"error": f"Todo {todo_id} not found"})
+        else:
+            out.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        return
+
+    if clear:
+        due_date = None
+    elif when:
+        try:
+            due_date = parse_due_date(when)
+        except ValueError as e:
+            if json_out:
+                _emit_json({"error": str(e)})
+            else:
+                out.print(f"[red]✗ {e}[/red]")
+            return
+    else:
+        msg = "Provide a due date or use --clear"
+        if json_out:
+            _emit_json({"error": msg})
+        else:
+            out.print(f"[red]✗ {msg}[/red]")
+        return
+
+    todo_repo.update_todo(todo_id, {"due_date": due_date})
+    updated = todo_repo.get_by_id(todo_id) or todo
+
+    if json_out:
+        _emit_json(_todo_to_dict(updated, ai_repo.get_latest_by_todo_id(todo_id)))
+        return
+
+    if due_date:
+        console.print(f"[green]✓ Todo {todo_id} due {due_date.isoformat()}[/green]")
+    else:
+        console.print(f"[green]✓ Cleared due date for todo {todo_id}[/green]")
+
 
 @app.command("show")
-def show_todo(todo_id: int) -> None:
+def show_todo(
+    todo_id: int,
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit todo as JSON (machine-readable)"
+    ),
+) -> None:
     """Show detailed information about a todo including AI enrichment."""
+    _initialize_services()
     todo = todo_repo.get_by_id(todo_id)
 
     if not todo:
-        console.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        if json_out:
+            _emit_json({"error": f"Todo {todo_id} not found"})
+        else:
+            console.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        return
+
+    if json_out:
+        ai_enrichment = ai_repo.get_latest_by_todo_id(todo_id)
+        payload = _todo_to_dict(todo, ai_enrichment)
+        payload["enrichment"] = _enrichment_to_dict(ai_enrichment)
+        _emit_json(payload)
         return
 
     console.print(f"\n[bold cyan]Task #{todo.id}[/bold cyan]")
@@ -566,7 +846,11 @@ def enrich_todo(
 
 
 @app.command("stats")
-def show_stats() -> None:
+def show_stats(
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit stats as JSON (machine-readable)"
+    ),
+) -> None:
     """Show user progress and statistics."""
     _initialize_services()
 
@@ -575,6 +859,10 @@ def show_stats() -> None:
     try:
         scoring_service = ScoringService(db)
         progress = scoring_service.get_user_progress()
+
+        if json_out:
+            _emit_json(progress)
+            return
 
         console.print("\n[bold cyan]📊 Your Progress[/bold cyan]")
 
@@ -676,7 +964,10 @@ def show_stats() -> None:
                         )
 
     except Exception as e:
-        console.print(f"[red]✗ Error retrieving stats: {e}[/red]")
+        if json_out:
+            _emit_json({"error": str(e)})
+        else:
+            console.print(f"[red]✗ Error retrieving stats: {e}[/red]")
 
 
 @app.command("dashboard")

@@ -311,8 +311,8 @@ class AIConfig(BaseModel):
     anthropic_api_key: str | None = None
 
     # Model preferences
-    openai_model: str = "gpt-4o-mini"
-    anthropic_model: str = "claude-3-haiku-20240307"
+    openai_model: str = "gpt-4.1-nano"
+    anthropic_model: str = "claude-haiku-4-5"
 
     # Enrichment settings
     enable_auto_enrichment: bool = True
