@@ -72,7 +72,7 @@ class GoogleCalendarClient:
 
     # -- event ops -----------------------------------------------------------
 
-    def _to_gcsa_event(self, event: Event):
+    def _to_gcsa_event(self, event: Event, *, with_attendees: bool):
         from gcsa.event import Event as GEvent
 
         if event.all_day:
@@ -87,19 +87,36 @@ class GoogleCalendarClient:
             end=end,
             description=event.description,
             location=event.location,
+            attendees=list(event.attendees) if with_attendees else None,
             event_id=event.google_event_id,  # None on create, set on update
         )
 
-    def push_event(self, event: Event) -> str:
-        """Create the event in Google Calendar; return its Google event id."""
+    @staticmethod
+    def _send_updates(send_invites: bool) -> str:
+        # 'all' emails every guest; 'none' adds guests silently (no email).
+        return "all" if send_invites else "none"
+
+    def push_event(self, event: Event, *, send_invites: bool = False) -> str:
+        """Create the event in Google Calendar; return its Google event id.
+
+        Attendees are attached (and emailed) only when ``send_invites`` is True.
+        """
         gc = self._connect(open_browser=False)
-        created = gc.add_event(self._to_gcsa_event(event), calendar_id=self.calendar_id)
+        created = gc.add_event(
+            self._to_gcsa_event(event, with_attendees=send_invites),
+            send_updates=self._send_updates(send_invites),
+            calendar_id=self.calendar_id,
+        )
         return created.event_id
 
-    def update_event(self, event: Event) -> None:
-        """Update an already-synced event in Google Calendar."""
+    def update_event(self, event: Event, *, send_invites: bool = False) -> None:
+        """Update an already-synced event; emails guests when ``send_invites``."""
         gc = self._connect(open_browser=False)
-        gc.update_event(self._to_gcsa_event(event), calendar_id=self.calendar_id)
+        gc.update_event(
+            self._to_gcsa_event(event, with_attendees=send_invites),
+            send_updates=self._send_updates(send_invites),
+            calendar_id=self.calendar_id,
+        )
 
     def delete_event(self, google_event_id: str) -> None:
         """Delete an event from Google Calendar by its Google event id."""
