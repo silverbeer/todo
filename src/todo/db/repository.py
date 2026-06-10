@@ -316,11 +316,12 @@ class TodoRepository(BaseRepository[Todo]):
         column_names = [desc[0] for desc in cursor.description]
         return [self._row_to_model(dict(zip(column_names, row))) for row in results]
 
-    def complete_todo(self, todo_id: int) -> Todo | None:
+    def complete_todo(self, todo_id: int, note: str | None = None) -> Todo | None:
         """Mark todo as completed and calculate points using the scoring system.
 
         Args:
             todo_id: ID of the todo to complete.
+            note: Optional completion note stored on the todo.
 
         Returns:
             Updated todo if successful, None otherwise.
@@ -351,13 +352,14 @@ class TodoRepository(BaseRepository[Todo]):
                 UPDATE todos
                 SET status = 'completed',
                     completed_at = CURRENT_TIMESTAMP,
+                    completion_note = ?,
                     base_points = ?,
                     bonus_points = ?,
                     total_points_earned = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """,
-                [base_points, bonus_points, total_points, todo_id],
+                [note, base_points, bonus_points, total_points, todo_id],
             )
 
             if result.rowcount == 0:

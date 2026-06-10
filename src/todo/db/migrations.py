@@ -155,6 +155,23 @@ class MigrationManager:
                 """
             )
 
+    def ensure_completion_note(self) -> None:
+        """Ensure the todos.completion_note column exists (migration v4).
+
+        Idempotent and safe to call on every startup.
+        """
+        conn = self.db.connect()
+        conn.execute("ALTER TABLE todos ADD COLUMN IF NOT EXISTS completion_note TEXT")
+        if self.get_current_version() < 4:
+            self._ensure_migration_table()
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name)
+                VALUES (4, 'todo_completion_note')
+                ON CONFLICT(version) DO NOTHING
+                """
+            )
+
     def run_migrations(self) -> None:
         """Run all pending migrations."""
         if not self.is_schema_initialized():

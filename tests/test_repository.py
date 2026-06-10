@@ -325,3 +325,17 @@ class TestRepositoryBase:
         )
         completed_large = todo_repo.complete_todo(large_todo.id)
         assert completed_large.base_points == 5
+
+
+class TestCompletionNote:
+    """Completion note on complete_todo."""
+
+    def test_complete_with_note_stored(self, todo_repo):
+        todo = todo_repo.create_todo("Pay bills")
+        todo_repo.complete_todo(todo.id, note="paid $240, conf #8891")
+        assert todo_repo.get_by_id(todo.id).completion_note == "paid $240, conf #8891"
+
+    def test_complete_without_note_is_none(self, todo_repo):
+        todo = todo_repo.create_todo("Other")
+        todo_repo.complete_todo(todo.id)
+        assert todo_repo.get_by_id(todo.id).completion_note is None

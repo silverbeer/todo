@@ -108,6 +108,7 @@ class Todo(BaseModel):
     actual_minutes: int | None = Field(None, ge=1)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    completion_note: str | None = Field(None, max_length=2000)
     due_date: date | None = None
 
     # Recurrence
