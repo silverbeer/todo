@@ -102,6 +102,31 @@ class TestTodoRepository:
 
         assert result is False
 
+    def test_delete_todo_removes_enrichment(self, todo_repo, temp_db):
+        """delete_todo also removes dependent ai_enrichments (hard FK)."""
+        todo = todo_repo.create_todo("Has enrichment")
+        conn = temp_db.connect()
+        conn.execute(
+            """
+            INSERT INTO ai_enrichments (todo_id, provider, model_name, confidence_score)
+            VALUES (?, ?, ?, ?)
+            """,
+            [todo.id, "openai", "gpt-4o-mini", 0.9],
+        )
+
+        result = todo_repo.delete_todo(todo.id)
+
+        assert result is True
+        assert todo_repo.get_by_id(todo.id) is None
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM ai_enrichments WHERE todo_id = ?", [todo.id]
+        ).fetchone()[0]
+        assert remaining == 0
+
+    def test_delete_todo_missing_returns_false(self, todo_repo):
+        """delete_todo returns False when the todo does not exist."""
+        assert todo_repo.delete_todo(999) is False
+
     def test_get_active_todos_empty(self, todo_repo):
         """Test getting active todos when none exist."""
         todos = todo_repo.get_active_todos()

@@ -781,3 +781,74 @@ class TestCLIJsonOutput:
         payload = json.loads(result.stdout.strip())
         assert payload["total_points"] == 10
         assert payload["level"] == 1
+
+
+class TestCLIDelete:
+    """Tests for the delete/rm command."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_delete_force_json(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """delete --force --json reports deleted and failed ids."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.delete_todo.side_effect = lambda tid: tid == 1
+
+        result = runner.invoke(app, ["delete", "1", "2", "--force", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert payload["deleted"] == [1]
+        assert payload["failed"] == [2]
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_delete_json_requires_force(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """delete --json without --force refuses (cannot prompt)."""
+        mock_migration.is_schema_initialized.return_value = True
+
+        result = runner.invoke(app, ["delete", "1", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout.strip())
+        assert "error" in payload
+        mock_todo_repo.delete_todo.assert_not_called()
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_delete_abort_on_no(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """Answering 'n' to the confirm prompt aborts without deleting."""
+        mock_migration.is_schema_initialized.return_value = True
+
+        result = runner.invoke(app, ["delete", "1"], input="n\n")
+
+        assert result.exit_code == 0
+        assert "Aborted" in result.stdout
+        mock_todo_repo.delete_todo.assert_not_called()
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_delete_confirm_yes(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """Answering 'y' to the confirm prompt deletes the todo."""
+        mock_migration.is_schema_initialized.return_value = True
+        mock_todo_repo.delete_todo.return_value = True
+
+        result = runner.invoke(app, ["rm", "1"], input="y\n")
+
+        assert result.exit_code == 0
+        mock_todo_repo.delete_todo.assert_called_once_with(1)

@@ -567,6 +567,61 @@ def complete_todo(
         )
 
 
+@app.command("delete")
+@app.command("rm")
+def delete_todo_cmd(
+    todo_ids: list[int] = typer.Argument(..., help="One or more todo IDs to delete"),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip the confirmation prompt"
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", "-j", help="Emit result as JSON (machine-readable)"
+    ),
+) -> None:
+    """Permanently delete one or more todos and their AI enrichment.
+
+    Unlike 'done', this removes the todo entirely and awards no points.
+    This cannot be undone.
+
+    Examples:
+        todo delete 42            # Delete a single todo (asks to confirm)
+        todo rm 10 11 12 --force  # Delete several without confirming
+    """
+    _initialize_services()
+
+    out = console_err if json_out else console
+
+    # Deletion is irreversible. Require confirmation, or --force. JSON mode
+    # cannot prompt, so it must pass --force explicitly.
+    if not force:
+        if json_out:
+            _emit_json({"error": "Refusing to delete without --force in --json mode"})
+            return
+        plural = "s" if len(todo_ids) > 1 else ""
+        if not typer.confirm(
+            f"Permanently delete {len(todo_ids)} todo{plural}? This cannot be undone."
+        ):
+            console.print("[yellow]Aborted[/yellow]")
+            return
+
+    deleted: list[int] = []
+    failed: list[int] = []
+    for todo_id in todo_ids:
+        try:
+            if todo_repo.delete_todo(todo_id):
+                deleted.append(todo_id)
+                out.print(f"[green]🗑  Deleted todo {todo_id}[/green]")
+            else:
+                failed.append(todo_id)
+                out.print(f"[red]✗ Todo {todo_id} not found[/red]")
+        except Exception as e:
+            failed.append(todo_id)
+            out.print(f"[red]✗ Error deleting todo {todo_id}: {e}[/red]")
+
+    if json_out:
+        _emit_json({"deleted": deleted, "failed": failed})
+
+
 @app.command("show")
 def show_todo(
     todo_id: int,
