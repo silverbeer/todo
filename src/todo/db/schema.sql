@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS todos (
     actual_minutes INTEGER CHECK (actual_minutes > 0),
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
+    completion_note TEXT,
     due_date DATE,
 
     -- Gamification

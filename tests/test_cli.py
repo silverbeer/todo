@@ -223,7 +223,7 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert "✓ Completed: Test task" in result.stdout
         assert "🎉 Earned 5 points!" in result.stdout
-        mock_todo_repo.complete_todo.assert_called_once_with(1)
+        mock_todo_repo.complete_todo.assert_called_once_with(1, note=None)
 
     @patch("todo.cli.main.config")
     @patch("todo.cli.main.db")
@@ -269,6 +269,7 @@ class TestCLICommands:
         mock_todo.created_at = Mock()
         mock_todo.created_at.strftime = Mock(return_value="2025-01-01 12:00")
         mock_todo.completed_at = None
+        mock_todo.completion_note = None
         mock_todo.total_points_earned = None
 
         mock_todo_repo.get_by_id.return_value = mock_todo
@@ -545,6 +546,7 @@ class TestCLIIntegration:
         mock_todo.created_at = Mock()
         mock_todo.created_at.strftime = Mock(return_value="2025-01-01 12:00")
         mock_todo.completed_at = None
+        mock_todo.completion_note = None
         mock_todo.total_points_earned = None
 
         mock_enrichment = Mock()
@@ -595,6 +597,7 @@ def _make_mock_todo(
     todo.is_overdue = False
     todo.created_at = "2026-01-01 00:00:00"
     todo.completed_at = None
+    todo.completion_note = None
     return todo
 
 
@@ -745,7 +748,7 @@ class TestCLIJsonOutput:
         completed.total_points_earned = 0
         # id 1 completes, id 2 returns None (not found / already done)
         mock_todo_repo.complete_todo.side_effect = (
-            lambda tid: completed if tid == 1 else None
+            lambda tid, note=None: completed if tid == 1 else None
         )
 
         result = runner.invoke(app, ["done", "1", "2", "--json"])
@@ -994,3 +997,30 @@ class TestCLIDue:
         payload = json.loads(result.stdout.strip())
         assert "error" in payload
         mock_todo_repo.update_todo.assert_not_called()
+
+
+class TestCLIDoneNote:
+    """Tests for completing a todo with a note."""
+
+    @patch("todo.cli.main.config")
+    @patch("todo.cli.main.db")
+    @patch("todo.cli.main.migration_manager")
+    @patch("todo.cli.main.todo_repo")
+    def test_done_with_note(
+        self, mock_todo_repo, mock_migration, mock_db, mock_config, runner
+    ):
+        """done --note passes the note through to complete_todo."""
+        mock_migration.is_schema_initialized.return_value = True
+        completed = _make_mock_todo()
+        completed.scoring_result = None
+        completed.total_points_earned = 0
+        mock_todo_repo.complete_todo.return_value = completed
+
+        result = runner.invoke(
+            app, ["done", "1", "--note", "paid via portal #8891", "--json"]
+        )
+
+        assert result.exit_code == 0
+        mock_todo_repo.complete_todo.assert_called_once_with(
+            1, note="paid via portal #8891"
+        )
