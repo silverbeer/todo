@@ -23,7 +23,7 @@ class AIConfig(BaseModel):
     anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")
 
     # Model configurations
-    openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model to use")
+    openai_model: str = Field(default="gpt-4.1-nano", description="OpenAI model to use")
     anthropic_model: str = Field(
         default="claude-haiku-4-5", description="Anthropic model to use"
     )
@@ -68,7 +68,7 @@ def get_app_config() -> AppConfig:
         enable_auto_enrichment=os.getenv("TODO_ENABLE_AI", "true").lower() == "true",
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-        openai_model=os.getenv("TODO_OPENAI_MODEL", "gpt-4o-mini"),
+        openai_model=os.getenv("TODO_OPENAI_MODEL", "gpt-4.1-nano"),
         anthropic_model=os.getenv("TODO_ANTHROPIC_MODEL", "claude-haiku-4-5"),
         default_provider=AIProvider(os.getenv("TODO_DEFAULT_AI_PROVIDER", "openai")),
         confidence_threshold=float(os.getenv("TODO_AI_CONFIDENCE_THRESHOLD", "0.7")),

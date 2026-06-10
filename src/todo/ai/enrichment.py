@@ -75,7 +75,7 @@ Be practical and realistic in your assessments. Consider context clues in the ta
 """
 
 
-def create_enrichment_agent(model_name: str = "openai:gpt-4o-mini") -> Agent:
+def create_enrichment_agent(model_name: str = "openai:gpt-4.1-nano") -> Agent:
     """Create the enrichment agent lazily when needed."""
     return Agent(
         model_name,

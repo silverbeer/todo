@@ -31,7 +31,7 @@ class BaseLLMProvider(ABC):
 class OpenAIProvider(BaseLLMProvider):
     """OpenAI provider implementation."""
 
-    def __init__(self, api_key: str, model_name: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str, model_name: str = "gpt-4.1-nano"):
         super().__init__(api_key, model_name)
         self.client = AsyncOpenAI(api_key=api_key)
 

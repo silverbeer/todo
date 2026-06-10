@@ -437,7 +437,7 @@ class TestAppConfig:
         """Test AI config creation."""
         ai_config = AIConfig()
         assert ai_config.default_provider == AIProvider.OPENAI
-        assert ai_config.openai_model == "gpt-4o-mini"
+        assert ai_config.openai_model == "gpt-4.1-nano"
         assert ai_config.anthropic_model == "claude-haiku-4-5"
         assert ai_config.enable_auto_enrichment
         assert ai_config.confidence_threshold == 0.7
