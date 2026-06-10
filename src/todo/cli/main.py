@@ -63,6 +63,10 @@ def _initialize_services():
             )
             migration_manager.run_migrations()
 
+        # Ensure newer tables (events/contacts) exist even on databases that
+        # were initialized before they were added. Idempotent.
+        migration_manager.ensure_events_schema()
+
         todo_repo = TodoRepository(db)
         ai_repo = AIEnrichmentRepository(db)
         enrichment_service = EnrichmentService(db)
