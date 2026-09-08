@@ -219,7 +219,16 @@ CLI, so it sees the same DB as the terminal.
 
 Only `TELEGRAM_ALLOWED_USER_ID` may talk to the bot — everyone else is ignored.
 
-### Run as a background service (macOS launchd)
+### Run as a background service
+
+Two ways to keep it running, pick whichever fits the machine:
+
+- **k3s** (e.g. the mac mini, which already runs k3s) — see
+  `k3s/telegram-bot/README.md`. Runs as a Deployment, sharing the same
+  DuckDB as the terminal `todo` on that machine via a hostPath mount.
+- **launchd** (any other Mac) — see below.
+
+#### macOS launchd
 
 Copy `launchd/com.silverbeer.todo-telegram-bot.plist` to
 `~/Library/LaunchAgents/`, edit the `ProgramArguments` path to your `todo`
