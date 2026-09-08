@@ -62,3 +62,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# k3s secrets (copied from *.yaml.template, real values)
+k3s/**/secret.yaml

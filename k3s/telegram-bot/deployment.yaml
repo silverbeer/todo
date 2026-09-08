@@ -1,0 +1,105 @@
+# Telegram bot for the `todo` CLI, running on the mac mini's k3s.
+#
+# Shares the SAME DuckDB the terminal `todo` command uses on that Mac via a
+# hostPath mount — this only works if the k3s node's VM passes the Mac's
+# home directory through to its filesystem (Rancher Desktop / Colima with a
+# /Users mount do this by default). If `kubectl exec` into the pod doesn't
+# show your real todos under /home/appuser/.local/share/todo, the node has
+# no such passthrough and this needs a PVC (local-path) instead — a separate
+# db from the terminal one, not what was asked for here.
+#
+# The container runs as uid 1000 (`appuser`, baked into the image). The
+# hostPath directory is very likely owned by your macOS user, a different
+# uid, so writes will fail with EACCES until one of:
+#   - runAsUser below is set to your Mac uid (`id -u` on the mac mini), or
+#   - the host dir is opened up: chmod -R o+rwX ~/.local/share/todo
+# The first is the one that doesn't leave the todo db world-writable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todo-telegram-bot
+  namespace: todo-bot
+  labels:
+    app: todo-telegram-bot
+spec:
+  replicas: 1
+  # Recreate: single-node k3s, no spare CPU for a rolling-update surge pod.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: todo-telegram-bot
+  template:
+    metadata:
+      labels:
+        app: todo-telegram-bot
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # REPLACE_ME: your Mac mini user's `id -u`, see note above
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: todo-telegram-bot
+          image: todo-telegram-bot:local
+          imagePullPolicy: Never # local build on the node, see README.md
+
+          env:
+            - name: TODO_DATABASE_PATH
+              value: /home/appuser/.local/share/todo/todos.db
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: todo-telegram-bot-secrets
+                  key: TELEGRAM_BOT_TOKEN
+            - name: TELEGRAM_ALLOWED_USER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: todo-telegram-bot-secrets
+                  key: TELEGRAM_ALLOWED_USER_ID
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: todo-telegram-bot-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: todo-telegram-bot-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+
+          volumeMounts:
+            - name: todo-db
+              mountPath: /home/appuser/.local/share/todo
+
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            # DuckDB writes .wal files next to the db and `uv` may touch the
+            # venv on startup; not worth chasing a read-only root for a
+            # single-user local bot.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+
+      volumes:
+        - name: todo-db
+          hostPath:
+            path: /Users/tomdrake/.local/share/todo # REPLACE_ME if the mini's user differs
+            type: DirectoryOrCreate
+
+      restartPolicy: Always
