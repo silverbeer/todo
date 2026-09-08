@@ -16,6 +16,7 @@ from ..ai.enrichment_service import EnrichmentService
 from ..ai.event_parser import EventParser
 from ..core.config import get_app_config
 from ..core.dates import parse_datetime, parse_due_date
+from ..core.event_recurrence import parse_recurrence
 from ..db.connection import DatabaseConnection
 from ..db.migrations import MigrationManager
 from ..db.repository import (
@@ -85,6 +86,7 @@ def _initialize_services():
         # before they were added. Idempotent.
         migration_manager.ensure_events_schema()
         migration_manager.ensure_completion_note()
+        migration_manager.ensure_event_recurrence()
 
         todo_repo = TodoRepository(db)
         ai_repo = AIEnrichmentRepository(db)
@@ -166,6 +168,31 @@ def _todo_to_dict(todo: Any, ai_enrichment: Any = None) -> dict[str, Any]:
     }
 
 
+_RRULE_FREQ_LABEL = {
+    "DAILY": "daily",
+    "WEEKLY": "weekly",
+    "MONTHLY": "monthly",
+    "YEARLY": "yearly",
+}
+
+
+def _rrule_summary(rrule: str | None) -> str:
+    """Render an RRULE string as a short human phrase (best-effort)."""
+    if not rrule:
+        return "—"
+    body = rrule.split("RRULE:", 1)[-1]
+    parts = dict(kv.split("=", 1) for kv in body.split(";") if "=" in kv)
+    label = _RRULE_FREQ_LABEL.get(parts.get("FREQ", ""), "custom")
+    interval = parts.get("INTERVAL")
+    if interval and interval != "1":
+        label = f"every {interval} {label.rstrip('ly')}s"
+    if "BYMONTHDAY" in parts:
+        label += f" (day {parts['BYMONTHDAY']})"
+    elif "BYDAY" in parts:
+        label += f" ({parts['BYDAY']})"
+    return label
+
+
 def _event_to_dict(event: Any) -> dict[str, Any]:
     """Serialize an Event to a plain dict."""
     return {
@@ -177,6 +204,7 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
         "all_day": event.all_day,
         "location": event.location,
         "status": _enum_val(event.status),
+        "recurrence": event.recurrence,
         "attendees": list(event.attendees),
         "google_event_id": event.google_event_id,
         "is_synced": event.is_synced,
@@ -1487,6 +1515,12 @@ def event_add(
     invite: str | None = typer.Option(
         None, "--invite", "-i", help="Comma-separated aliases/emails to invite"
     ),
+    repeat: str | None = typer.Option(
+        None,
+        "--repeat",
+        "-r",
+        help="Repeat rule, e.g. 'monthly on the 10th', 'every monday', 'weekly'",
+    ),
     no_ai: bool = typer.Option(False, "--no-ai", help="Skip AI parsing; use flags"),
     no_sync: bool = typer.Option(
         False, "--no-sync", help="Don't push to Google Calendar"
@@ -1514,6 +1548,7 @@ def event_add(
     end_at = None
     all_day = False
     attendee_tokens: list[str] = []
+    recurrence_phrase = repeat or ""
 
     if no_ai or when:
         # Flag mode.
@@ -1564,9 +1599,22 @@ def event_add(
 
         location = location or draft.location
         attendee_tokens = draft.attendees
+        # An explicit --repeat wins over the AI-extracted phrase.
+        recurrence_phrase = recurrence_phrase or draft.recurrence
 
     if duration and not end_at:
         end_at = start_at + timedelta(minutes=duration)
+
+    recurrence = None
+    if recurrence_phrase:
+        recurrence = parse_recurrence(recurrence_phrase, start_at)
+        if recurrence is None:
+            _emit_error(
+                out,
+                json_out,
+                f"Could not understand the repeat rule: {recurrence_phrase!r}",
+            )
+            return
 
     event = event_repo.create_event(
         title,
@@ -1575,6 +1623,7 @@ def event_add(
         description=description,
         location=location,
         all_day=all_day,
+        recurrence=recurrence,
     )
 
     emails = contact_repo.resolve(attendee_tokens) if attendee_tokens else []
@@ -1611,6 +1660,8 @@ def event_add(
     )
     if event.location:
         console.print(f"[dim]Where: {event.location}[/dim]")
+    if event.recurrence:
+        console.print(f"[dim]Repeats: {_rrule_summary(event.recurrence)}[/dim]")
     if emails:
         console.print(f"[dim]Invitees: {', '.join(emails)}[/dim]")
     if event.is_synced:
@@ -1659,6 +1710,7 @@ def event_list(
     table.add_column("ID", style="cyan", width=3)
     table.add_column("Event", style="white")
     table.add_column("When", style="green")
+    table.add_column("Repeats", style="cyan")
     table.add_column("Where", style="blue")
     table.add_column("Invitees", style="magenta")
     table.add_column("Sync", style="yellow", width=4)
@@ -1676,6 +1728,7 @@ def event_list(
             str(event.id),
             title,
             when,
+            _rrule_summary(event.recurrence),
             event.location or "—",
             str(len(event.attendees)) if event.attendees else "—",
             "✓" if event.is_synced else "○",
@@ -1721,6 +1774,8 @@ def event_show(
     if event.end_at:
         info.add_row("Ends", event.end_at.strftime("%Y-%m-%d %H:%M"))
     info.add_row("Status", event.status.value.title())
+    if event.recurrence:
+        info.add_row("Repeats", _rrule_summary(event.recurrence))
     if event.location:
         info.add_row("Where", event.location)
     if event.attendees:

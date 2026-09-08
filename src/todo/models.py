@@ -410,6 +410,10 @@ class Event(BaseModel):
 
     status: EventStatus = EventStatus.SCHEDULED
 
+    # Recurrence as an RFC 5545 RRULE string (e.g. "RRULE:FREQ=MONTHLY;
+    # BYMONTHDAY=10"); None for a one-off event. Google expands occurrences.
+    recurrence: str | None = Field(None, max_length=500)
+
     # Google Calendar sync (populated once pushed)
     google_event_id: str | None = None
     google_calendar_id: str | None = None

@@ -33,6 +33,9 @@ Extract fields literally — do NOT compute or resolve dates yourself.
 - location: the location if mentioned, else null.
 - attendees: people to invite — tokens after "invite", "with", "for" — as
   lowercase aliases (e.g. "wife", "kids") or email addresses.
+- recurrence: the repeat phrase exactly as written (e.g. "every monday",
+  "monthly", "monthly on the 10th", "every 2 weeks"). Empty string if the
+  event does not repeat.
 
 Do not invent details that are not present.
 """.strip()
@@ -60,6 +63,9 @@ class EventDraft(BaseModel):
     attendees: list[str] = Field(
         default_factory=list,
         description="Aliases or emails to invite (e.g. wife, kids)",
+    )
+    recurrence: str = Field(
+        "", description="Repeat phrase as written, e.g. 'monthly'; empty if none"
     )
 
 

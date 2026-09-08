@@ -1130,17 +1130,28 @@ class EventRepository(BaseRepository[Event]):
         description: str | None = None,
         location: str | None = None,
         all_day: bool = False,
+        recurrence: str | None = None,
     ) -> Event:
         """Create a new event and return it (with empty attendee list)."""
         conn = self.db.connect()
         cursor = conn.execute(
             """
             INSERT INTO events
-                (uuid, title, description, start_at, end_at, all_day, location)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (uuid, title, description, start_at, end_at, all_day, location,
+                 recurrence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *
             """,
-            [str(uuid4()), title, description, start_at, end_at, all_day, location],
+            [
+                str(uuid4()),
+                title,
+                description,
+                start_at,
+                end_at,
+                all_day,
+                location,
+                recurrence,
+            ],
         )
         event = self._row_to_model(_row_to_dict(cursor.fetchone(), cursor))
         event.attendees = self.get_attendees(event.id)

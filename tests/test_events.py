@@ -100,6 +100,23 @@ class TestEventRepository:
         assert fetched.is_synced is False
         assert fetched.attendees == []
 
+    def test_recurrence_roundtrips(self, events):
+        rule = "RRULE:FREQ=MONTHLY;BYMONTHDAY=10"
+        ev = events.create_event(
+            "Heartguard",
+            datetime(2026, 7, 10, 10, 0),
+            recurrence=rule,
+        )
+        assert ev.recurrence == rule
+        assert events.get_by_id(ev.id).recurrence == rule
+        listed = events.list_events(upcoming_only=False)
+        assert any(e.recurrence == rule for e in listed)
+
+    def test_recurrence_defaults_to_none(self, events):
+        ev = events.create_event("One-off", datetime(2099, 1, 1, 9, 0))
+        assert ev.recurrence is None
+        assert events.get_by_id(ev.id).recurrence is None
+
     def test_attendees_roundtrip_and_dedup(self, events):
         ev = events.create_event("Party", datetime(2026, 6, 12, 19, 0))
         events.set_attendees(ev.id, ["a@x.com", "b@x.com", "a@x.com"])

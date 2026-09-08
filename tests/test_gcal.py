@@ -68,7 +68,7 @@ def test_delete_event_calls_gcsa(tmp_path):
 def test_all_day_event_uses_dates(tmp_path):
     c = _client(tmp_path, creds=True)
     ev = Event(title="Vacation", start_at=datetime(2026, 6, 20, 0, 0), all_day=True)
-    gevent = c._to_gcsa_event(ev, with_attendees=False)
+    gevent = c._to_gcsa_event(ev)
     # gcsa stores all-day events with date (not datetime) start/end
     assert not isinstance(gevent.start, datetime)
 
@@ -89,7 +89,7 @@ def test_push_with_invites_sets_send_updates_all(tmp_path):
     assert sorted(a.email for a in gevent.attendees) == ["a@x.com", "b@x.com"]
 
 
-def test_push_without_invites_omits_attendees(tmp_path):
+def test_push_without_invites_attaches_but_does_not_email(tmp_path):
     c = _client(tmp_path, creds=True)
     fake_cal = Mock()
     fake_cal.add_event.return_value = Mock(event_id="g")
@@ -102,4 +102,4 @@ def test_push_without_invites_omits_attendees(tmp_path):
         c.push_event(ev, send_invites=False)
     assert fake_cal.add_event.call_args.kwargs["send_updates"] == "none"
     gevent = fake_cal.add_event.call_args.args[0]
-    assert not gevent.attendees
+    assert [a.email for a in gevent.attendees] == ["a@x.com"]
