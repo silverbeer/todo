@@ -72,7 +72,7 @@ class GoogleCalendarClient:
 
     # -- event ops -----------------------------------------------------------
 
-    def _to_gcsa_event(self, event: Event, *, with_attendees: bool):
+    def _to_gcsa_event(self, event: Event):
         from gcsa.event import Event as GEvent
 
         if event.all_day:
@@ -87,7 +87,11 @@ class GoogleCalendarClient:
             end=end,
             description=event.description,
             location=event.location,
-            attendees=list(event.attendees) if with_attendees else None,
+            # Guests are always attached to the Google event; whether they are
+            # *emailed* is governed separately by send_updates (see below).
+            attendees=list(event.attendees) or None,
+            # RRULE string(s); Google expands the series. None for one-offs.
+            recurrence=[event.recurrence] if event.recurrence else None,
             event_id=event.google_event_id,  # None on create, set on update
         )
 
@@ -99,11 +103,12 @@ class GoogleCalendarClient:
     def push_event(self, event: Event, *, send_invites: bool = False) -> str:
         """Create the event in Google Calendar; return its Google event id.
 
-        Attendees are attached (and emailed) only when ``send_invites`` is True.
+        Guests are always attached; they are emailed only when ``send_invites``
+        is True (otherwise added silently with send_updates='none').
         """
         gc = self._connect(open_browser=False)
         created = gc.add_event(
-            self._to_gcsa_event(event, with_attendees=send_invites),
+            self._to_gcsa_event(event),
             send_updates=self._send_updates(send_invites),
             calendar_id=self.calendar_id,
         )
@@ -113,7 +118,7 @@ class GoogleCalendarClient:
         """Update an already-synced event; emails guests when ``send_invites``."""
         gc = self._connect(open_browser=False)
         gc.update_event(
-            self._to_gcsa_event(event, with_attendees=send_invites),
+            self._to_gcsa_event(event),
             send_updates=self._send_updates(send_invites),
             calendar_id=self.calendar_id,
         )

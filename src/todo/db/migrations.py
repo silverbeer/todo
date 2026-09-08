@@ -108,6 +108,7 @@ class MigrationManager:
             all_day BOOLEAN DEFAULT FALSE,
             location VARCHAR(500),
             status VARCHAR(20) NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'cancelled')),
+            recurrence VARCHAR(500),
             google_event_id VARCHAR(255),
             google_calendar_id VARCHAR(255),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -168,6 +169,26 @@ class MigrationManager:
                 """
                 INSERT INTO schema_migrations (version, name)
                 VALUES (4, 'todo_completion_note')
+                ON CONFLICT(version) DO NOTHING
+                """
+            )
+
+    def ensure_event_recurrence(self) -> None:
+        """Ensure the events.recurrence column exists (migration v5).
+
+        Idempotent and safe to call on every startup — covers databases whose
+        events table predates recurrence support.
+        """
+        conn = self.db.connect()
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN IF NOT EXISTS recurrence VARCHAR(500)"
+        )
+        if self.get_current_version() < 5:
+            self._ensure_migration_table()
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name)
+                VALUES (5, 'event_recurrence')
                 ON CONFLICT(version) DO NOTHING
                 """
             )

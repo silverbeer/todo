@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS events (
     all_day BOOLEAN DEFAULT FALSE,
     location VARCHAR(500),
     status VARCHAR(20) NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'cancelled')),
+    recurrence VARCHAR(500),
     google_event_id VARCHAR(255),
     google_calendar_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
