@@ -2112,6 +2112,20 @@ def contact_remove(
 app.add_typer(contact_app, name="contact")
 
 
+telegram_app = typer.Typer(help="Telegram bot: add/list todos from your phone")
+
+
+@telegram_app.command("serve")
+def telegram_serve() -> None:
+    """Run the Telegram bot (long polling, foreground). Ctrl-C to stop."""
+    from ..telegram.bot import main as run_bot
+
+    run_bot()
+
+
+app.add_typer(telegram_app, name="telegram")
+
+
 @app.command("achievements")
 def show_achievements(
     unlocked: bool = typer.Option(

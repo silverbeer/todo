@@ -65,12 +65,23 @@ class CalendarConfig(BaseModel):
     calendar_id: str = Field(default="primary", description="Target Google calendar id")
 
 
+class TelegramConfig(BaseModel):
+    """Telegram bot configuration."""
+
+    bot_token: str | None = Field(default=None, description="Bot token from @BotFather")
+    allowed_user_id: int | None = Field(
+        default=None,
+        description="Telegram user id allowed to use the bot; others are ignored",
+    )
+
+
 class AppConfig(BaseModel):
     """Main application configuration."""
 
     ai: AIConfig = Field(default_factory=AIConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
@@ -103,10 +114,17 @@ def get_app_config() -> AppConfig:
         calendar_id=os.getenv("TODO_GCAL_CALENDAR_ID", "primary"),
     )
 
+    allowed_user_id = os.getenv("TELEGRAM_ALLOWED_USER_ID")
+    telegram_config = TelegramConfig(
+        bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+        allowed_user_id=int(allowed_user_id) if allowed_user_id else None,
+    )
+
     return AppConfig(
         ai=ai_config,
         database=database_config,
         calendar=calendar_config,
+        telegram=telegram_config,
         debug=os.getenv("TODO_DEBUG", "false").lower() == "true",
         log_level=os.getenv("TODO_LOG_LEVEL", "INFO").upper(),
     )

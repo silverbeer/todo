@@ -202,6 +202,35 @@ Applied Migrations:
   • v1: Create initial schema with todos, categories, user stats, and AI tables
 ```
 
+## Telegram Bot (add/list from your phone)
+
+Long-polling bot, no public endpoint needed. It shells out to the local `todo`
+CLI, so it sees the same DB as the terminal.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather), get the token.
+2. Get your numeric Telegram user id from [@userinfobot](https://t.me/userinfobot).
+3. Add to `.env` (or `~/.config/todo/config.toml`'s equivalent env vars):
+   ```
+   TELEGRAM_BOT_TOKEN=...
+   TELEGRAM_ALLOWED_USER_ID=...
+   ```
+4. Run in the foreground to test: `todo telegram serve`
+5. Send the bot any text to add it as a todo; `/list` shows active todos.
+
+Only `TELEGRAM_ALLOWED_USER_ID` may talk to the bot — everyone else is ignored.
+
+### Run as a background service (macOS launchd)
+
+Copy `launchd/com.silverbeer.todo-telegram-bot.plist` to
+`~/Library/LaunchAgents/`, edit the `ProgramArguments` path to your `todo`
+binary (`which todo`) and the `EnvironmentVariables` token/id, then:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.silverbeer.todo-telegram-bot.plist
+```
+
+Logs go to `~/Library/Logs/todo-telegram-bot.log`.
+
 ## Current Implementation Status
 
 ### ✅ Fully Implemented Features

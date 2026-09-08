@@ -32,6 +32,7 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "gcsa>=2.6.0",
     "google-auth>=2.41",
+    "python-telegram-bot>=21.0",
 ]
 
 [project.optional-dependencies]
